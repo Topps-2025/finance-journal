@@ -3187,7 +3187,11 @@ class FinanceJournalApp:
             return False
         return abs(left_value - right_value) <= tolerance
 
-    def _find_statement_trade_matches(self, normalized: dict[str, Any]) -> list[dict[str, Any]]:
+    def _find_statement_trade_matches(
+        self,
+        normalized: dict[str, Any],
+        statement_context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         ts_code = normalized.get("ts_code") or ""
         if not ts_code:
             return []
@@ -3195,6 +3199,26 @@ class FinanceJournalApp:
             "SELECT * FROM trades WHERE ts_code = ? ORDER BY updated_at DESC LIMIT 50",
             (ts_code,),
         )
+        sell_leg = dict((statement_context or {}).get("sell_leg") or {})
+        sell_statement_id = str(sell_leg.get("statement_id") or "").strip()
+        sell_account = str(sell_leg.get("shareholder_account") or "").strip()
+        if normalized.get("journal_kind") == "close_only" and sell_statement_id:
+            statement_matches: list[dict[str, Any]] = []
+            for trade in candidates:
+                if trade.get("status") != "closed":
+                    continue
+                if normalized.get("sell_date") and trade.get("sell_date") != normalized.get("sell_date"):
+                    continue
+                if normalized.get("sell_price") is not None and trade.get("sell_price") and not self._trade_price_matches(trade.get("sell_price"), normalized.get("sell_price")):
+                    continue
+                if self._trade_statement_id(trade, leg_key="sell_leg") != sell_statement_id:
+                    continue
+                candidate_account = self._trade_statement_account(trade, leg_key="sell_leg")
+                if sell_account and candidate_account and candidate_account != sell_account:
+                    continue
+                statement_matches.append(trade)
+            if statement_matches:
+                return statement_matches
         matches: list[dict[str, Any]] = []
         for trade in candidates:
             if normalized.get("buy_date") and trade.get("buy_date") != normalized.get("buy_date"):
@@ -3212,40 +3236,134 @@ class FinanceJournalApp:
         context = json_loads(trade.get("statement_context_json"), {}) or {}
         return dict(context.get(leg_key) or {})
 
+    def _trade_statement_leg_value(self, trade: dict[str, Any], key: str, leg_key: str = "buy_leg") -> Any:
+        return self._trade_statement_leg(trade, leg_key=leg_key).get(key)
+
     def _trade_statement_quantity(self, trade: dict[str, Any], leg_key: str = "buy_leg") -> float | None:
-        context = json_loads(trade.get("statement_context_json"), {}) or {}
-        return _coalesce_float((context.get(leg_key) or {}).get("quantity"))
+        return _coalesce_float(self._trade_statement_leg_value(trade, "quantity", leg_key=leg_key))
 
     def _trade_statement_account(self, trade: dict[str, Any], leg_key: str = "buy_leg") -> str:
-        context = json_loads(trade.get("statement_context_json"), {}) or {}
-        return str((context.get(leg_key) or {}).get("shareholder_account") or "").strip()
+        return str(self._trade_statement_leg_value(trade, "shareholder_account", leg_key=leg_key) or "").strip()
 
-    def _resolve_statement_close_candidate(self, normalized: dict[str, Any], candidates: list[dict[str, Any]], statement_context: dict[str, Any]) -> dict[str, Any] | None:
+    def _trade_statement_id(self, trade: dict[str, Any], leg_key: str = "buy_leg") -> str:
+        return str(self._trade_statement_leg_value(trade, "statement_id", leg_key=leg_key) or "").strip()
+
+    def _filtered_statement_close_candidates(
+        self,
+        normalized: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        statement_context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         sell_date = str(normalized.get("sell_date") or "")
-        sell_quantity = _coalesce_float(normalized.get("quantity"))
         sell_account = str((statement_context.get("sell_leg") or {}).get("shareholder_account") or "").strip()
         filtered = [
             item
             for item in candidates
             if not sell_date or not item.get("buy_date") or str(item.get("buy_date")) <= sell_date
         ]
+        if sell_account:
+            exact_account_matches = [item for item in filtered if self._trade_statement_account(item) == sell_account]
+            if exact_account_matches:
+                return exact_account_matches
+            return [
+                item
+                for item in filtered
+                if not self._trade_statement_account(item) or self._trade_statement_account(item) == sell_account
+            ]
+        return filtered
+
+    def _find_unique_quantity_subset(
+        self,
+        candidates: list[dict[str, Any]],
+        target_quantity: float,
+        max_candidates: int = 10,
+    ) -> list[dict[str, Any]]:
+        quantity_candidates: list[tuple[dict[str, Any], int]] = []
+        for candidate in candidates:
+            candidate_qty = self._trade_statement_quantity(candidate)
+            if candidate_qty is None or candidate_qty <= 0:
+                continue
+            quantity_candidates.append((candidate, int(round(candidate_qty * 1000))))
+        if not quantity_candidates or len(quantity_candidates) > max_candidates:
+            return []
+
+        target = int(round(target_quantity * 1000))
+        matches: list[list[dict[str, Any]]] = []
+
+        def backtrack(index: int, remaining: int, chosen: list[dict[str, Any]]) -> None:
+            if len(matches) > 1:
+                return
+            if remaining == 0:
+                matches.append(list(chosen))
+                return
+            if remaining < 0 or index >= len(quantity_candidates):
+                return
+            candidate, quantity = quantity_candidates[index]
+            chosen.append(candidate)
+            backtrack(index + 1, remaining - quantity, chosen)
+            chosen.pop()
+            backtrack(index + 1, remaining, chosen)
+
+        backtrack(0, target, [])
+        if len(matches) == 1:
+            return matches[0]
+        return []
+
+    def _resolve_statement_close_candidates(
+        self,
+        normalized: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        statement_context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        filtered = self._filtered_statement_close_candidates(normalized, candidates, statement_context)
         if len(filtered) == 1:
-            return filtered[0]
+            return filtered
+        sell_quantity = _coalesce_float(normalized.get("quantity"))
         if sell_quantity is None:
-            return None
+            return []
 
         quantity_matches = []
         for item in filtered:
             candidate_qty = self._trade_statement_quantity(item)
             if candidate_qty is None or abs(candidate_qty - sell_quantity) > 1e-6:
                 continue
-            candidate_account = self._trade_statement_account(item)
-            if sell_account and candidate_account and candidate_account != sell_account:
-                continue
             quantity_matches.append(item)
         if len(quantity_matches) == 1:
-            return quantity_matches[0]
+            return quantity_matches
+
+        return self._find_unique_quantity_subset(filtered, sell_quantity)
+
+    def _resolve_statement_close_candidate(self, normalized: dict[str, Any], candidates: list[dict[str, Any]], statement_context: dict[str, Any]) -> dict[str, Any] | None:
+        resolved = self._resolve_statement_close_candidates(normalized, candidates, statement_context)
+        if len(resolved) == 1:
+            return resolved[0]
         return None
+
+    def _allocate_statement_close_context(
+        self,
+        statement_context: dict[str, Any],
+        trade: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(statement_context or {})
+        sell_leg = dict(payload.get("sell_leg") or {})
+        if not sell_leg:
+            return payload
+        matched_quantity = self._trade_statement_quantity(trade)
+        reported_quantity = _coalesce_float(sell_leg.get("quantity"))
+        if matched_quantity is not None:
+            sell_leg["matched_quantity"] = matched_quantity
+        if matched_quantity is not None and reported_quantity and reported_quantity > 0:
+            sell_leg["reported_quantity"] = reported_quantity
+            if abs(matched_quantity - reported_quantity) > 1e-6:
+                ratio = matched_quantity / reported_quantity
+                sell_leg["quantity"] = matched_quantity
+                sell_leg["allocation_ratio"] = round(ratio, 6)
+                for key in ("amount", "fee", "occurred_amount", "commission", "stamp_duty", "transfer_fee", "other_fee"):
+                    value = _coalesce_float(sell_leg.get(key))
+                    if value is not None:
+                        sell_leg[key] = round(value * ratio, 6)
+        payload["sell_leg"] = sell_leg
+        return payload
 
     def _statement_follow_up_payload(self, trade_row: dict[str, Any]) -> dict[str, Any]:
         fields = self._trade_to_journal_fields(trade_row)
@@ -3627,7 +3745,7 @@ class FinanceJournalApp:
                 continue
 
             if normalized["journal_kind"] in {"open_trade", "closed_trade"}:
-                exact_matches = self._find_statement_trade_matches(normalized)
+                exact_matches = self._find_statement_trade_matches(normalized, statement_context=statement_context)
                 exact_trade = next(
                     (
                         item
@@ -3643,6 +3761,8 @@ class FinanceJournalApp:
                     ),
                     None,
                 )
+                if not exact_trade and normalized["journal_kind"] == "open_trade" and len(exact_matches) == 1:
+                    exact_trade = exact_matches[0]
                 if exact_trade:
                     exact_trade = self._update_trade_statement_context(
                         exact_trade["trade_id"],
@@ -3711,27 +3831,46 @@ class FinanceJournalApp:
                 )
                 continue
 
+            exact_matches = self._find_statement_trade_matches(normalized, statement_context=statement_context)
+            if exact_matches:
+                for exact_trade in exact_matches:
+                    follow_up = self._statement_follow_up_payload(exact_trade)
+                    imported_items.append(
+                        {
+                            "row_index": index,
+                            "status": "matched_existing",
+                            "trade_id": exact_trade.get("trade_id") or "",
+                            "trade": exact_trade,
+                            "normalized_row": normalized,
+                            "follow_up": follow_up,
+                        }
+                    )
+                continue
+
             open_candidates = self._open_trade_candidates(normalized["ts_code"])
-            resolved_candidate = self._resolve_statement_close_candidate(normalized, open_candidates, statement_context)
-            if resolved_candidate:
-                closed_trade = self.close_trade(
-                    resolved_candidate["trade_id"],
-                    sell_date=normalized["sell_date"],
-                    sell_price=float(normalized["sell_price"]),
-                    statement_context=statement_context,
-                    notes=normalized.get("notes") or "",
-                )
-                follow_up = self._statement_follow_up_payload(closed_trade)
-                imported_items.append(
-                    {
-                        "row_index": index,
-                        "status": "closed_existing",
-                        "trade_id": closed_trade.get("trade_id") or "",
-                        "trade": closed_trade,
-                        "normalized_row": normalized,
-                        "follow_up": follow_up,
-                    }
-                )
+            resolved_candidates = self._resolve_statement_close_candidates(normalized, open_candidates, statement_context)
+            if resolved_candidates:
+                matched_trade_ids = [item.get("trade_id") or "" for item in resolved_candidates]
+                for resolved_candidate in resolved_candidates:
+                    closed_trade = self.close_trade(
+                        resolved_candidate["trade_id"],
+                        sell_date=normalized["sell_date"],
+                        sell_price=float(normalized["sell_price"]),
+                        statement_context=self._allocate_statement_close_context(statement_context, resolved_candidate),
+                        notes=normalized.get("notes") or "",
+                    )
+                    follow_up = self._statement_follow_up_payload(closed_trade)
+                    imported_items.append(
+                        {
+                            "row_index": index,
+                            "status": "closed_existing",
+                            "trade_id": closed_trade.get("trade_id") or "",
+                            "trade": closed_trade,
+                            "normalized_row": normalized,
+                            "follow_up": follow_up,
+                            "matched_trade_ids": matched_trade_ids,
+                        }
+                    )
             else:
                 imported_items.append(
                     {

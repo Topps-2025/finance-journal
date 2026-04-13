@@ -1269,6 +1269,58 @@ class FinanceJournalSmokeTest(unittest.TestCase):
         self.assertEqual(statement_context["buy_leg"]["quantity"], 300.0)
         self.assertEqual(statement_context["sell_leg"]["statement_id"], "S1")
 
+    def test_statement_import_can_match_close_only_by_unique_quantity_subset(self) -> None:
+        self.app.add_watchlist("002624", name="完美世界")
+        statement_path = self.runtime_root / "close_match_by_subset.xls"
+        statement_path.write_bytes(
+            (
+                '="成交日期"\t="成交时间"\t="证券代码"\t="证券名称"\t="委托类别"\t="成交价格"\t="成交数量"\t="成交金额"\t="股东账户"\t="成交编号"\n'
+                '="20260410"\t="09:31:00"\t="002624"\t="完美世界"\t="买入"\t22.40\t300\t6720\t="A1"\t="B1"\n'
+                '="20260410"\t="09:45:00"\t="002624"\t="完美世界"\t="买入"\t22.49\t400\t8996\t="A1"\t="B2"\n'
+                '="20260411"\t="10:12:00"\t="002624"\t="完美世界"\t="卖出"\t21.79\t700\t15253\t="A1"\t="S1"\n'
+            ).encode("gbk")
+        )
+
+        result = self.app.import_statement_file(str(statement_path), trade_date="20260411")
+        self.assertEqual(result["summary"]["imported_new"], 2)
+        self.assertEqual(result["summary"]["closed_existing"], 2)
+        self.assertEqual(result["summary"]["needs_manual_match"], 0)
+
+        open_trades = self.app.list_trades(status="open", limit=10)
+        closed_trades = self.app.list_trades(status="closed", limit=10)
+        self.assertEqual(len(open_trades), 0)
+        self.assertEqual(len(closed_trades), 2)
+        sell_quantities = sorted(
+            json_loads(item["statement_context_json"], {}).get("sell_leg", {}).get("quantity")
+            for item in closed_trades
+        )
+        self.assertEqual(sell_quantities, [300.0, 400.0])
+        allocation_ratios = sorted(
+            json_loads(item["statement_context_json"], {}).get("sell_leg", {}).get("allocation_ratio")
+            for item in closed_trades
+        )
+        self.assertEqual(allocation_ratios, [0.428571, 0.571429])
+
+    def test_statement_import_subset_close_is_idempotent_by_statement_id(self) -> None:
+        self.app.add_watchlist("002624", name="完美世界")
+        statement_path = self.runtime_root / "close_match_by_subset_rerun.xls"
+        statement_path.write_bytes(
+            (
+                '="成交日期"\t="成交时间"\t="证券代码"\t="证券名称"\t="委托类别"\t="成交价格"\t="成交数量"\t="股东账户"\t="成交编号"\n'
+                '="20260410"\t="09:31:00"\t="002624"\t="完美世界"\t="买入"\t22.40\t300\t="A1"\t="B1"\n'
+                '="20260410"\t="09:45:00"\t="002624"\t="完美世界"\t="买入"\t22.49\t400\t="A1"\t="B2"\n'
+                '="20260411"\t="10:12:00"\t="002624"\t="完美世界"\t="卖出"\t21.79\t700\t="A1"\t="S1"\n'
+            ).encode("gbk")
+        )
+
+        first_result = self.app.import_statement_file(str(statement_path), trade_date="20260411")
+        second_result = self.app.import_statement_file(str(statement_path), trade_date="20260411")
+
+        self.assertEqual(first_result["summary"]["closed_existing"], 2)
+        self.assertEqual(second_result["summary"]["matched_existing"], 4)
+        self.assertEqual(second_result["summary"]["needs_manual_match"], 0)
+        self.assertEqual(len(self.app.list_trades(status="closed", limit=10)), 2)
+
     def test_gateway_can_import_statement_and_open_follow_up_session(self) -> None:
         self.app.add_watchlist("603083", name="剑桥科技")
         statement_path = self.runtime_root / "gateway_statement_rows.csv"
