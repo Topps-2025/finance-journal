@@ -234,6 +234,7 @@ python -m unittest discover -s tests -v
 
 ## 其他文档
 
+- OpenClaw 云服务器 Git 同步说明：`OPENCLAW_CLOUD_SYNC_WORKFLOW.md`
 - 轨迹自进化核心算法（中文）：`trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.md`
 - 轨迹自进化核心算法（英文）：`trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.en.md`
 - 已实现能力：`IMPLEMENTED_FEATURES.md`

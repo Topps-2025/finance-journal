@@ -142,6 +142,10 @@ git push gitee private-sync
 
 ## Cloud Server Recommendation
 
+If you want a more detailed, OpenClaw-oriented workflow for "folder already exists -> how to pull / switch / update", also see:
+
+- `OPENCLAW_CLOUD_SYNC_WORKFLOW.md`
+
 For a cloud server that should receive both code and your personal ledger:
 
 ```powershell

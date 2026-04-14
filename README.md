@@ -235,6 +235,7 @@ python -m unittest discover -s tests -v
 
 ## Additional Documents
 
+- OpenClaw cloud Git sync guide: `OPENCLAW_CLOUD_SYNC_WORKFLOW.md`
 - core trajectory self-evolution algorithm note (ZH): `trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.md`
 - core trajectory self-evolution algorithm note (EN): `trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.en.md`
 - implemented capabilities: `IMPLEMENTED_FEATURES.md`
