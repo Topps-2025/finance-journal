@@ -234,6 +234,8 @@ python -m unittest discover -s tests -v
 
 ## 其他文档
 
+- 轨迹自进化核心算法（中文）：`trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.md`
+- 轨迹自进化核心算法（英文）：`trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.en.md`
 - 已实现能力：`IMPLEMENTED_FEATURES.md`
 - 已知缺口与后续项：`NOT_IMPLEMENTED_YET.md`
 - 统一状态与变更记录：`FINANCE_JOURNAL_STATUS_AND_CHANGELOG.md`

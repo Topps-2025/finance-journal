@@ -2,6 +2,11 @@
 
 更新日期：2026-04-12
 
+若你想看更贴近当前代码实现的拆解，请优先阅读：
+
+- `trajectory-self-evolution-core-algorithm.md`
+- `trajectory-self-evolution-core-algorithm.en.md`
+
 这份说明聚焦一个核心判断：
 
 当前这套账本已经有“交易级闭环样本”，但还没有“盘中逐步状态-动作-奖励轨迹”。

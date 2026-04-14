@@ -235,6 +235,8 @@ python -m unittest discover -s tests -v
 
 ## Additional Documents
 
+- core trajectory self-evolution algorithm note (ZH): `trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.md`
+- core trajectory self-evolution algorithm note (EN): `trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.en.md`
 - implemented capabilities: `IMPLEMENTED_FEATURES.md`
 - known gaps and next steps: `NOT_IMPLEMENTED_YET.md`
 - unified status and changelog: `FINANCE_JOURNAL_STATUS_AND_CHANGELOG.md`
