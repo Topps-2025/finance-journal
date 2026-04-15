@@ -23,8 +23,10 @@ Updated: 2026-04-15
 - SQLite FTS5-backed coarse recall
 - structured memory filtering by symbol / stage / strategy / tags
 - scene expansion and linked skill-card retrieval
+- manual memory revision for tags / market stage / quality score / correction note
+- manual skill-card revision for trigger conditions and `do_not_use_when` guards
 - memory snapshots written to `_runtime/memory/`
-- `memory rebuild`, `memory query`, `memory skillize`
+- `memory rebuild`, `memory query`, `memory skillize`, `memory revise`, `memory skill-edit`
 
 ## Planning, Trading, Review, and Analytics
 

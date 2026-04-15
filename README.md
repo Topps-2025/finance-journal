@@ -60,6 +60,7 @@ python .\finance-journal-orchestrator\scripts\finance_journal_cli.py vault sync 
 - `TRADE_MEMORY_SYSTEM_PAPER.md`: paper-style architecture write-up with LaTeX-ready equations and implementation mapping
 - `OPENCLAW_DEMO_WORKFLOW.md`: end-to-end OpenClaw classroom demo flow
 - `MEMORY_RETRIEVAL_BENCHMARK.md`: benchmark design, baselines, and current local results
+- `ERROR_INPUT_CORRECTION.md`: how the framework exposes, patches, and demotes wrong trade theses
 - `IMPLEMENTED_FEATURES.md`: what is already done
 - `NOT_IMPLEMENTED_YET.md`: what remains intentionally open
 

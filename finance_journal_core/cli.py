@@ -234,6 +234,32 @@ def build_parser() -> argparse.ArgumentParser:
     memory_skillize.add_argument("--trade-date")
     memory_skillize.add_argument("--lookback-days", type=int, default=365)
     memory_skillize.add_argument("--min-samples", type=int, default=2)
+    memory_revise = memory_sub.add_parser("revise")
+    memory_revise.add_argument("memory_id")
+    memory_revise.add_argument("--title")
+    memory_revise.add_argument("--text-body")
+    memory_revise.add_argument("--trade-date")
+    memory_revise.add_argument("--market-stage")
+    memory_revise.add_argument("--strategy-line")
+    memory_revise.add_argument("--tags")
+    memory_revise.add_argument("--add-tags", default="")
+    memory_revise.add_argument("--remove-tags", default="")
+    memory_revise.add_argument("--summary-json", default="")
+    memory_revise.add_argument("--quality-json", default="")
+    memory_revise.add_argument("--quality-score", type=float)
+    memory_revise.add_argument("--correction-note")
+    memory_skill_edit = memory_sub.add_parser("skill-edit")
+    memory_skill_edit.add_argument("skill_id")
+    memory_skill_edit.add_argument("--title")
+    memory_skill_edit.add_argument("--intent")
+    memory_skill_edit.add_argument("--trigger-conditions")
+    memory_skill_edit.add_argument("--add-trigger-conditions", default="")
+    memory_skill_edit.add_argument("--remove-trigger-conditions", default="")
+    memory_skill_edit.add_argument("--do-not-use-when")
+    memory_skill_edit.add_argument("--add-do-not-use-when", default="")
+    memory_skill_edit.add_argument("--remove-do-not-use-when", default="")
+    memory_skill_edit.add_argument("--summary-markdown")
+    memory_skill_edit.add_argument("--community-shareable", choices=["true", "false"])
 
     schedule = subparsers.add_parser("schedule", help="Run scheduler checks")
     schedule.add_argument("--now", help="Current timestamp, format YYYY-MM-DDTHH:MM")
@@ -471,6 +497,40 @@ def main(argv: list[str] | None = None, anchor_path: Path | None = None) -> int:
                     tags=args.tags,
                     trade_date=args.trade_date,
                     limit=args.limit,
+                )
+            )
+        elif args.action == "revise":
+            _print_json(
+                app.revise_memory_cell(
+                    args.memory_id,
+                    title=args.title,
+                    text_body=args.text_body,
+                    trade_date=args.trade_date,
+                    market_stage=args.market_stage,
+                    strategy_line=args.strategy_line,
+                    tags=args.tags,
+                    add_tags=args.add_tags,
+                    remove_tags=args.remove_tags,
+                    summary_patch=_parse_json_argument(args.summary_json),
+                    quality_patch=_parse_json_argument(args.quality_json),
+                    quality_score=args.quality_score,
+                    correction_note=args.correction_note,
+                )
+            )
+        elif args.action == "skill-edit":
+            _print_json(
+                app.revise_skill_card(
+                    args.skill_id,
+                    title=args.title,
+                    intent=args.intent,
+                    trigger_conditions=args.trigger_conditions,
+                    add_trigger_conditions=args.add_trigger_conditions,
+                    remove_trigger_conditions=args.remove_trigger_conditions,
+                    do_not_use_when=args.do_not_use_when,
+                    add_do_not_use_when=args.add_do_not_use_when,
+                    remove_do_not_use_when=args.remove_do_not_use_when,
+                    summary_markdown=args.summary_markdown,
+                    community_shareable=None if args.community_shareable is None else args.community_shareable == "true",
                 )
             )
         else:

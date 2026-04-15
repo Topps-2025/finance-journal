@@ -20,6 +20,7 @@ Finance Journal is currently positioned as:
 - updated the community vision toward linked memories plus reusable skill cards
 - added a paper-style architecture note for formal design communication
 - added an OpenClaw demo workflow note and a first retrieval benchmark harness
+- added manual memory / skill-card revision paths for correcting wrong trade theses
 
 ## Version History
 

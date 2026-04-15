@@ -82,6 +82,9 @@ ACTION_ALIASES = {
     "query": "query",
     "查询": "query",
     "skillize": "skillize",
+    "revise": "revise",
+    "edit": "revise",
+    "skill-edit": "skill-edit",
     "固化": "skillize",
 }
 
@@ -141,6 +144,23 @@ KEY_ALIASES = {
     "limit": "limit",
     "tags": "tags",
     "strategy_line": "strategy_line",
+    "title": "title",
+    "text_body": "text_body",
+    "add_tags": "add_tags",
+    "remove_tags": "remove_tags",
+    "summary_json": "summary_json",
+    "quality_json": "quality_json",
+    "quality_score": "quality_score",
+    "correction_note": "correction_note",
+    "trigger_conditions": "trigger_conditions",
+    "add_trigger_conditions": "add_trigger_conditions",
+    "remove_trigger_conditions": "remove_trigger_conditions",
+    "do_not_use_when": "do_not_use_when",
+    "add_do_not_use_when": "add_do_not_use_when",
+    "remove_do_not_use_when": "remove_do_not_use_when",
+    "summary_markdown": "summary_markdown",
+    "community_shareable": "community_shareable",
+    "intent": "intent",
 }
 
 
@@ -320,6 +340,40 @@ def dispatch(command: str, anchor_path: Path, runtime_root: str | None = None, e
     if domain == "memory":
         if action == "rebuild":
             return app.rebuild_memory(limit=int(params.get("limit", 0)))
+        if action == "revise":
+            return app.revise_memory_cell(
+                params.get("memory_id") or params.get("id") or "",
+                title=params.get("title"),
+                text_body=params.get("text_body"),
+                trade_date=params.get("trade_date"),
+                market_stage=params.get("market_stage"),
+                strategy_line=params.get("strategy_line"),
+                tags=params.get("tags"),
+                add_tags=params.get("add_tags", ""),
+                remove_tags=params.get("remove_tags", ""),
+                summary_patch=json.loads(params["summary_json"]) if params.get("summary_json") else None,
+                quality_patch=json.loads(params["quality_json"]) if params.get("quality_json") else None,
+                quality_score=float(params["quality_score"]) if params.get("quality_score") is not None else None,
+                correction_note=params.get("correction_note"),
+            )
+        if action == "skill-edit":
+            return app.revise_skill_card(
+                params.get("skill_id") or params.get("id") or "",
+                title=params.get("title"),
+                intent=params.get("intent"),
+                trigger_conditions=params.get("trigger_conditions"),
+                add_trigger_conditions=params.get("add_trigger_conditions", ""),
+                remove_trigger_conditions=params.get("remove_trigger_conditions", ""),
+                do_not_use_when=params.get("do_not_use_when"),
+                add_do_not_use_when=params.get("add_do_not_use_when", ""),
+                remove_do_not_use_when=params.get("remove_do_not_use_when", ""),
+                summary_markdown=params.get("summary_markdown"),
+                community_shareable=(
+                    None
+                    if params.get("community_shareable") is None
+                    else params.get("community_shareable", "").lower() in {"1", "true", "yes", "y"}
+                ),
+            )
         if action == "skillize":
             return app.skillize_memory(trade_date=params.get("trade_date"), lookback_days=int(params.get("lookback_days", 365)), min_samples=int(params.get("min_samples", 2)))
         return app.query_memory(

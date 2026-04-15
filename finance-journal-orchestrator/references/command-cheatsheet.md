@@ -14,6 +14,8 @@ python .\finance-journal-orchestrator\scripts\finance_journal_cli.py memory quer
 python .\finance-journal-orchestrator\scripts\finance_journal_cli.py memory skillize --trade-date 20260415 --lookback-days 365
 python .\finance-journal-orchestrator\scripts\finance_journal_cli.py vault sync --trade-date 20260415
 python .\finance-journal-orchestrator\scripts\run_memory_benchmark.py --root .\_runtime_benchmark --disable-market-data
+python .\finance-journal-orchestrator\scripts\finance_journal_cli.py memory revise memory_trade_xxx --add-tags error_cluster:trend_conflict --quality-score -8 --market-stage downtrend --correction-note "wrong thesis for downtrend"
+python .\finance-journal-orchestrator\scripts\finance_journal_cli.py memory skill-edit skill_quality_path_xxx --add-do-not-use-when "when the market is shrinking and trending down"
 python .\finance-journal-orchestrator\scripts\finance_journal_cli.py schedule --now 2026-04-15T08:05 --dry-run
 ```
 

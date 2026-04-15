@@ -26,6 +26,7 @@ Not implemented yet:
 - moderation and provenance services for public memory cards
 - a shared registry for reusable community skill cards
 - federation between multiple local runtimes
+- community-side cross-validation for high-risk patterns and wrong-thesis warnings
 
 ## Research and Publication Packaging
 

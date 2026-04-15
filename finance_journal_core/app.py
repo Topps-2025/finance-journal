@@ -1849,6 +1849,130 @@ class FinanceJournalApp:
     def _skill_id(self, source_kind: str, source_id: str) -> str:
         return f"skill_{safe_filename(source_kind)}_{safe_filename(source_id)}"
 
+    def _reindex_memory_cell(self, payload: dict[str, Any]) -> None:
+        tag_values = split_tags(payload.get("tags_json", []))
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM memory_cells_fts WHERE memory_id = ?", (payload["memory_id"],))
+            conn.execute(
+                """
+                INSERT INTO memory_cells_fts(memory_id, title, text_body, tag_text, strategy_line, market_stage)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["memory_id"],
+                    payload["title"],
+                    payload["text_body"],
+                    " ".join(tag_values),
+                    payload["strategy_line"],
+                    payload["market_stage"],
+                ),
+            )
+
+    def _memory_scene_specs_from_cell(self, memory_row: dict[str, Any]) -> list[tuple[str, str, str]]:
+        tags = split_tags(memory_row.get("tags_json", []))
+        keys: list[tuple[str, str, str]] = []
+        ts_code = str(memory_row.get("ts_code") or "").strip()
+        if ts_code:
+            keys.append((f"symbol:{ts_code}", "symbol", f"Symbol Scene | {memory_row.get('ts_code') or ts_code}"))
+        strategy_line = str(memory_row.get("strategy_line") or "").strip()
+        if strategy_line:
+            keys.append((f"strategy:{strategy_line}", "strategy", f"Strategy Scene | {strategy_line}"))
+        market_stage = str(memory_row.get("market_stage") or "").strip()
+        if market_stage:
+            keys.append((f"stage:{market_stage}", "stage", f"Stage Scene | {market_stage}"))
+        top_logic = next((tag.split(":", 1)[1] for tag in tags if tag.startswith("logic:")), "")
+        top_pattern = next((tag.split(":", 1)[1] for tag in tags if tag.startswith("pattern:")), "")
+        if top_logic or top_pattern:
+            label = " / ".join(part for part in (top_logic, top_pattern) if part)
+            keys.append((f"setup:{safe_filename(label)}", "setup", f"Setup Scene | {label}"))
+        return keys
+
+    def _memory_hyperedge_specs_from_cell(self, memory_row: dict[str, Any]) -> list[dict[str, str]]:
+        specs: list[dict[str, str]] = []
+        for tag in split_tags(memory_row.get("tags_json", [])):
+            if ":" not in tag:
+                continue
+            edge_type, label = tag.split(":", 1)
+            specs.append(
+                {
+                    "edge_key": f"{edge_type}:{label}",
+                    "edge_type": edge_type,
+                    "label": label,
+                }
+            )
+        return specs
+
+    def _refresh_links_from_specs(
+        self,
+        memory_id: str,
+        *,
+        specs: list[dict[str, str]],
+        scenes: list[tuple[str, str, str]],
+        metadata: dict[str, Any] | None = None,
+        member_role: str = "",
+    ) -> None:
+        if not memory_id:
+            return
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM memory_hyperedge_members WHERE member_kind = 'memory' AND member_id = ?", (memory_id,))
+            for spec in specs:
+                edge_id = self._edge_id(spec["edge_key"])
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_hyperedges(
+                        edge_id, edge_key, edge_type, label, tags_json, metadata_json, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        edge_id,
+                        spec["edge_key"],
+                        spec["edge_type"],
+                        spec["label"],
+                        json_dumps([spec["edge_type"], spec["label"]]),
+                        json_dumps(metadata or {}),
+                        now_ts(),
+                        now_ts(),
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO memory_hyperedge_members(membership_id, edge_id, member_kind, member_id, member_role, created_at)
+                    VALUES(?, ?, 'memory', ?, ?, ?)
+                    """,
+                    (make_id("membership"), edge_id, memory_id, member_role or "memory", now_ts()),
+                )
+        for scene_key, scene_type, title in scenes:
+            scene = self._rebuild_scene(scene_key, scene_type, title)
+            if not scene:
+                continue
+            edge_id = self._edge_id(scene_key)
+            with self.db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_hyperedges(
+                        edge_id, edge_key, edge_type, label, tags_json, metadata_json, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        edge_id,
+                        scene_key,
+                        scene_type,
+                        title,
+                        json_dumps(split_tags(json_loads(scene.get("tags_json"), []))),
+                        json_dumps({"scene_id": scene.get("scene_id")}),
+                        now_ts(),
+                        now_ts(),
+                    ),
+                )
+                conn.execute("DELETE FROM memory_hyperedge_members WHERE edge_id = ? AND member_kind = 'scene'", (edge_id,))
+                conn.execute(
+                    """
+                    INSERT INTO memory_hyperedge_members(membership_id, edge_id, member_kind, member_id, member_role, created_at)
+                    VALUES(?, ?, 'scene', ?, 'scene', ?)
+                    """,
+                    (make_id("membership"), edge_id, scene.get("scene_id") or "", now_ts()),
+                )
+
     def _upsert_memory_cell(self, entity_kind: str, row: dict[str, Any]) -> dict[str, Any]:
         entity_id = str(row.get("plan_id") or row.get("trade_id") or row.get("review_id") or "").strip()
         if not entity_id:
@@ -1908,21 +2032,7 @@ class FinanceJournalApp:
                     payload["updated_at"],
                 ),
             )
-            conn.execute("DELETE FROM memory_cells_fts WHERE memory_id = ?", (payload["memory_id"],))
-            conn.execute(
-                """
-                INSERT INTO memory_cells_fts(memory_id, title, text_body, tag_text, strategy_line, market_stage)
-                VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    payload["memory_id"],
-                    payload["title"],
-                    payload["text_body"],
-                    " ".join(payload["tags_json"]),
-                    payload["strategy_line"],
-                    payload["market_stage"],
-                ),
-            )
+        self._reindex_memory_cell(payload)
         stored = self.db.fetchone("SELECT * FROM memory_cells WHERE memory_id = ?", (memory_id,)) or {}
         self._write_memory_snapshot(stored)
         return stored
@@ -1971,66 +2081,25 @@ class FinanceJournalApp:
         memory_id = str(memory_row.get("memory_id") or "")
         if not memory_id:
             return
-        specs = hyperedge_specs_for_row(entity_kind, row)
-        with self.db.connect() as conn:
-            conn.execute("DELETE FROM memory_hyperedge_members WHERE member_kind = 'memory' AND member_id = ?", (memory_id,))
-            for spec in specs:
-                edge_id = self._edge_id(spec["edge_key"])
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO memory_hyperedges(
-                        edge_id, edge_key, edge_type, label, tags_json, metadata_json, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        edge_id,
-                        spec["edge_key"],
-                        spec["edge_type"],
-                        spec["label"],
-                        json_dumps([spec["edge_type"], spec["label"]]),
-                        json_dumps({"source_entity_kind": entity_kind}),
-                        now_ts(),
-                        now_ts(),
-                    ),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO memory_hyperedge_members(membership_id, edge_id, member_kind, member_id, member_role, created_at)
-                    VALUES(?, ?, 'memory', ?, ?, ?)
-                    """,
-                    (make_id("membership"), edge_id, memory_id, entity_kind, now_ts()),
-                )
-        for scene_key, scene_type, title in scene_keys_for_row(entity_kind, row):
-            scene = self._rebuild_scene(scene_key, scene_type, title)
-            if not scene:
-                continue
-            edge_id = self._edge_id(scene_key)
-            with self.db.connect() as conn:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO memory_hyperedges(
-                        edge_id, edge_key, edge_type, label, tags_json, metadata_json, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        edge_id,
-                        scene_key,
-                        scene_type,
-                        title,
-                        json_dumps(split_tags(json_loads(scene.get("tags_json"), []))),
-                        json_dumps({"scene_id": scene.get("scene_id")}),
-                        now_ts(),
-                        now_ts(),
-                    ),
-                )
-                conn.execute("DELETE FROM memory_hyperedge_members WHERE edge_id = ? AND member_kind = 'scene'", (edge_id,))
-                conn.execute(
-                    """
-                    INSERT INTO memory_hyperedge_members(membership_id, edge_id, member_kind, member_id, member_role, created_at)
-                    VALUES(?, ?, 'scene', ?, 'scene', ?)
-                    """,
-                    (make_id("membership"), edge_id, scene.get("scene_id") or "", now_ts()),
-                )
+        self._refresh_links_from_specs(
+            memory_id,
+            specs=hyperedge_specs_for_row(entity_kind, row),
+            scenes=scene_keys_for_row(entity_kind, row),
+            metadata={"source_entity_kind": entity_kind},
+            member_role=entity_kind,
+        )
+
+    def _refresh_manual_memory_links(self, memory_row: dict[str, Any]) -> None:
+        memory_id = str(memory_row.get("memory_id") or "")
+        if not memory_id:
+            return
+        self._refresh_links_from_specs(
+            memory_id,
+            specs=self._memory_hyperedge_specs_from_cell(memory_row),
+            scenes=self._memory_scene_specs_from_cell(memory_row),
+            metadata={"source_entity_kind": memory_row.get("source_entity_kind") or "memory"},
+            member_role=str(memory_row.get("memory_kind") or "memory"),
+        )
 
     def _sync_memory_for_entity(self, entity_kind: str, entity_id: str) -> dict[str, Any]:
         if entity_kind == "plan":
@@ -2397,6 +2466,168 @@ class FinanceJournalApp:
             "period_end": end_date,
             "created_skills": created,
         }
+
+    def revise_memory_cell(
+        self,
+        memory_id: str,
+        *,
+        title: str | None = None,
+        text_body: str | None = None,
+        trade_date: str | None = None,
+        market_stage: str | None = None,
+        strategy_line: str | None = None,
+        tags: list[str] | str | None = None,
+        add_tags: list[str] | str | None = None,
+        remove_tags: list[str] | str | None = None,
+        summary_patch: dict[str, Any] | None = None,
+        quality_patch: dict[str, Any] | None = None,
+        quality_score: float | None = None,
+        correction_note: str | None = None,
+    ) -> dict[str, Any]:
+        memory_row = self.db.fetchone("SELECT * FROM memory_cells WHERE memory_id = ?", (memory_id,))
+        if not memory_row:
+            raise ValueError(f"memory cell not found: {memory_id}")
+        summary = json_loads(memory_row.get("summary_json"), {}) or {}
+        quality = json_loads(memory_row.get("quality_json"), {}) or {}
+        current_tags = split_tags(json_loads(memory_row.get("tags_json"), []))
+        if tags is not None:
+            updated_tags = split_tags(tags)
+        else:
+            updated_tags = list(current_tags)
+        for tag in split_tags(add_tags):
+            if tag not in updated_tags:
+                updated_tags.append(tag)
+        for tag in split_tags(remove_tags):
+            updated_tags = [item for item in updated_tags if item != tag]
+        memory_kind = str(memory_row.get("memory_kind") or memory_row.get("source_entity_kind") or "").strip()
+        if memory_kind and memory_kind not in updated_tags:
+            updated_tags.insert(0, memory_kind)
+        effective_trade_date = normalize_trade_date(trade_date or memory_row.get("trade_date") or self._today())
+        effective_market_stage = str(market_stage if market_stage is not None else memory_row.get("market_stage") or "").strip()
+        effective_strategy_line = str(strategy_line if strategy_line is not None else memory_row.get("strategy_line") or "").strip()
+        ts_code = str(memory_row.get("ts_code") or "").strip()
+        if ts_code and f"symbol:{ts_code}" not in updated_tags:
+            updated_tags.append(f"symbol:{ts_code}")
+        if effective_market_stage and f"stage:{effective_market_stage}" not in updated_tags:
+            updated_tags.append(f"stage:{effective_market_stage}")
+        if effective_strategy_line and f"strategy:{effective_strategy_line}" not in updated_tags:
+            updated_tags.append(f"strategy:{effective_strategy_line}")
+        updated_tags = list(dict.fromkeys(updated_tags))
+        if summary_patch:
+            summary.update(summary_patch)
+        if quality_patch:
+            quality.update(quality_patch)
+        if quality_score is not None:
+            quality["quality_score"] = float(quality_score)
+        if correction_note:
+            quality["correction_note"] = str(correction_note).strip()
+        payload = {
+            "title": title if title is not None else memory_row.get("title") or "",
+            "text_body": text_body if text_body is not None else memory_row.get("text_body") or "",
+            "trade_date": effective_trade_date,
+            "market_stage": effective_market_stage,
+            "strategy_line": effective_strategy_line,
+            "summary_json": summary,
+            "quality_json": quality,
+            "tags_json": updated_tags,
+            "updated_at": now_ts(),
+            "memory_id": memory_id,
+        }
+        self.db.execute(
+            """
+            UPDATE memory_cells
+            SET title = ?, text_body = ?, trade_date = ?, market_stage = ?, strategy_line = ?,
+                summary_json = ?, quality_json = ?, tags_json = ?, updated_at = ?
+            WHERE memory_id = ?
+            """,
+            (
+                payload["title"],
+                payload["text_body"],
+                payload["trade_date"],
+                payload["market_stage"],
+                payload["strategy_line"],
+                json_dumps(payload["summary_json"]),
+                json_dumps(payload["quality_json"]),
+                json_dumps(payload["tags_json"]),
+                payload["updated_at"],
+                payload["memory_id"],
+            ),
+        )
+        stored = self.db.fetchone("SELECT * FROM memory_cells WHERE memory_id = ?", (memory_id,)) or {}
+        self._reindex_memory_cell(stored)
+        self._refresh_manual_memory_links(stored)
+        self._write_memory_snapshot(stored)
+        result = {"memory_cell": self.db.fetchone("SELECT * FROM memory_cells WHERE memory_id = ?", (memory_id,)) or {}}
+        if self._vault_enabled():
+            result["vault_note"] = self.export_memory_note(memory_id)
+        return result
+
+    def revise_skill_card(
+        self,
+        skill_id: str,
+        *,
+        title: str | None = None,
+        intent: str | None = None,
+        trigger_conditions: list[str] | str | None = None,
+        add_trigger_conditions: list[str] | str | None = None,
+        remove_trigger_conditions: list[str] | str | None = None,
+        do_not_use_when: list[str] | str | None = None,
+        add_do_not_use_when: list[str] | str | None = None,
+        remove_do_not_use_when: list[str] | str | None = None,
+        summary_markdown: str | None = None,
+        community_shareable: bool | None = None,
+    ) -> dict[str, Any]:
+        skill_row = self.db.fetchone("SELECT * FROM memory_skill_cards WHERE skill_id = ?", (skill_id,))
+        if not skill_row:
+            raise ValueError(f"skill card not found: {skill_id}")
+        triggers = split_tags(json_loads(skill_row.get("trigger_conditions_json"), []))
+        if trigger_conditions is not None:
+            triggers = split_tags(trigger_conditions)
+        for tag in split_tags(add_trigger_conditions):
+            if tag not in triggers:
+                triggers.append(tag)
+        for tag in split_tags(remove_trigger_conditions):
+            triggers = [item for item in triggers if item != tag]
+        guards = split_tags(json_loads(skill_row.get("do_not_use_when_json"), []))
+        if do_not_use_when is not None:
+            guards = split_tags(do_not_use_when)
+        for tag in split_tags(add_do_not_use_when):
+            if tag not in guards:
+                guards.append(tag)
+        for tag in split_tags(remove_do_not_use_when):
+            guards = [item for item in guards if item != tag]
+        payload = {
+            "title": title if title is not None else skill_row.get("title") or "",
+            "intent": intent if intent is not None else skill_row.get("intent") or "",
+            "trigger_conditions_json": list(dict.fromkeys(triggers)),
+            "do_not_use_when_json": list(dict.fromkeys(guards)),
+            "summary_markdown": summary_markdown if summary_markdown is not None else skill_row.get("summary_markdown") or "",
+            "community_shareable": int(community_shareable) if community_shareable is not None else int(skill_row.get("community_shareable") or 0),
+            "updated_at": now_ts(),
+            "skill_id": skill_id,
+        }
+        self.db.execute(
+            """
+            UPDATE memory_skill_cards
+            SET title = ?, intent = ?, trigger_conditions_json = ?, do_not_use_when_json = ?,
+                summary_markdown = ?, community_shareable = ?, updated_at = ?
+            WHERE skill_id = ?
+            """,
+            (
+                payload["title"],
+                payload["intent"],
+                json_dumps(payload["trigger_conditions_json"]),
+                json_dumps(payload["do_not_use_when_json"]),
+                payload["summary_markdown"],
+                payload["community_shareable"],
+                payload["updated_at"],
+                payload["skill_id"],
+            ),
+        )
+        result = {"skill_card": self.db.fetchone("SELECT * FROM memory_skill_cards WHERE skill_id = ?", (skill_id,)) or {}}
+        if self._vault_enabled():
+            result["vault_note"] = self.export_skill_note(skill_id)
+        return result
 
     def _attach_memory_context(self, payload: dict[str, Any], *, fields: dict[str, Any] | None = None, entity_kind: str = "", entity_id: str = "") -> dict[str, Any]:
         merged = dict(payload)

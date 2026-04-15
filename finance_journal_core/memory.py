@@ -221,6 +221,9 @@ def score_memory_row(
     pnl = quality.get("actual_return_pct")
     if isinstance(pnl, (int, float)):
         score += max(min(float(pnl) / 10.0, 2.0), -2.0)
+    manual_quality = quality.get("quality_score")
+    if isinstance(manual_quality, (int, float)):
+        score += max(min(float(manual_quality), 3.0), -3.0)
     return round(score, 4)
 
 
