@@ -630,7 +630,7 @@ def _build_decision_axes(fields: dict[str, Any], journal_kind: str) -> list[dict
             "label": "选股/关注对象",
             "field": "user_focus",
             "filled": _axis_ready(fields, ["ts_code", "user_focus", "thesis"]),
-            "question": "你当时主要看向哪里？先说个股、板块、指数或新闻源即可。",
+            "question": "你当时主要看向哪里？先说个股、板块、指数或你最在意的信息切片即可。",
         },
         {
             "axis": "timing",

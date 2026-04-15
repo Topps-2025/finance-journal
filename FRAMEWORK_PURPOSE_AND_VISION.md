@@ -1,29 +1,28 @@
 # Framework Purpose and Vision
 
-Finance Journal exists to make trading review more continuous, less fragmented, and less dependent on perfect manual forms.
+Finance Journal exists to make trading review durable enough to become long-term memory.
 
 ## Purpose
 
 The framework aims to:
-
-- capture the real decision path behind a trade, not just the final profit-and-loss snapshot
-- let users start with messy natural language and add structure only when needed
-- preserve the subjective layer that still matters in discretionary and semi-systematic trading
-- convert repeated experience into review prompts, discipline checks, and reusable personal patterns
+- capture the real decision path behind a trade, not just PnL
+- let users start from messy natural language and add structure later
+- preserve discretionary and semi-systematic context that usually gets lost
+- convert repeated experience into memory cells, scenes, and skill cards
 
 ## Design Principles
 
-- local first: your runtime, data, and notes remain under your control
-- facts before interpretation: dates, prices, and quantities should be aligned before strong conclusions are made
-- conversation over bureaucracy: missing details can be filled through follow-up rather than rigid data entry
-- soft structure over fake certainty: tags and summaries help retrieval, but they are not automatic trading rules
-- evolution over snapshots: a single journal entry matters less than the trajectory it contributes to
+- local first: runtime, memory, and vault remain under user control
+- facts before interpretation: prices, dates, and positions should settle before heavy conclusions
+- conversation over bureaucracy: follow-up questions fill missing fields incrementally
+- retrieval over scrolling: history must be searchable as memory, not only readable as notes
+- evolution over snapshots: a single record matters less than the path it contributes to
+- reminders over automation: bandit outputs and skill cards are review tools, not execution rules
 
 ## Vision
 
 Over time, the project should evolve into:
-
-- a generic journaling and review framework for multiple markets
-- a durable bridge between chat-based journaling and structured analytics
-- a safer way to compare discretionary, semi-systematic, and rule-driven decision layers
-- a long-term memory system for personal trading behavior rather than a one-off note-taking tool
+- a durable long-term memory operating layer for personal trading behavior
+- a bridge between OpenClaw conversations and structured trade memory
+- a retrieval stack that combines scene organization, hypergraph linkage, and bandit reranking
+- a community-ready architecture that can share anonymized memories and reusable skill cards with provenance

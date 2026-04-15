@@ -1,253 +1,74 @@
 # Finance Journal
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+Finance Journal is now focused on one core problem: combining OpenClaw-style orchestration with long-term trading memory.
 
-Finance Journal is a conversation-first trading journal and reflection framework for discretionary and semi-systematic traders.
+It is a local-first framework for:
+- conversation-first trade journaling
+- structured plan / trade / review records
+- long-term memory storage and retrieval
+- trajectory self-evolution with bandit reranking
+- memory-to-skill solidification for reusable trading know-how
 
-It is designed for workflows such as:
+It is not a news monitor, announcement crawler, or copy-trading system.
 
-- capturing plans, trades, emotions, mistakes, and lessons in natural language
-- filling missing details through follow-up questions instead of forcing rigid forms up front
-- importing standardized broker statement rows first, then adding the subjective reasoning later
-- exporting structured records into Markdown, JSON artifacts, and an Obsidian vault
-- turning historical trades into review prompts, health reports, and self-evolution summaries
+## Current Architecture
 
-The current implementation ships with defaults that are convenient for China A-share workflows, such as `ts_code`, Tushare-based market data, and prebuilt Chinese news adapters. However, the session model, statement-import flow, reflection loop, and vault-export architecture are intentionally reusable beyond one market.
+- `finance-journal-orchestrator/`: OpenClaw-facing entry, session gateway, references
+- `trade-plan-assistant/`: plan creation and historical reference
+- `trade-evolution-engine/`: trade logs, review loop, self-evolution outputs
+- `behavior-health-reporter/`: behavior and discipline reports
+- `finance_journal_core/`: shared runtime, storage, memory, retrieval, vault export
+- `tests/`: smoke tests for the memory-centric workflow
 
-## What This Repository Is
-
-Finance Journal is primarily:
-
-- a local-first trading behavior journal
-- a session-oriented journaling skill for OpenClaw-style chat workflows
-- a bridge between free-form notes and structured review data
-- a personal improvement system for plans, trades, reviews, and discipline analysis
-
-It is not:
-
-- an order execution system
-- a stock-picking oracle
-- investment advice
-- a fully automated quant platform
-
-## Storage Model
-
-The project uses a local-first storage stack:
+## Runtime Layout
 
 - SQLite database: `_runtime/data/finance_journal.db`
-- daily artifacts: `_runtime/artifacts/daily/YYYYMMDD/`
-- long-term memory: `_runtime/memory/`
-- Markdown knowledge base: `_runtime/obsidian-vault/`
+- Daily artifacts: `_runtime/artifacts/daily/YYYYMMDD/`
+- Long-term memory snapshots: `_runtime/memory/`
+- Markdown vault: `_runtime/obsidian-vault/`
 
-## Repository Layout
+## Long-Term Memory Design
 
-- `finance-journal-orchestrator/`: primary skill entry, CLI wrappers, gateway scripts, references
-- `finance-info-monitor/`: optional news and announcement monitoring skill
-- `trade-plan-assistant/`: planning workflows and reference generation
-- `trade-evolution-engine/`: trade journaling, post-trade review, self-evolution outputs
-- `behavior-health-reporter/`: behavior and discipline reports
-- `finance_journal_core/`: shared Python core logic
-- `tests/`: offline smoke tests
-- `examples/`: sample input files such as statement rows
+The current memory layer uses:
+- `memory_cells`: atomic memory units built from plans, trades, and reviews
+- `memory_scenes`: scene-level aggregates such as symbol, setup, stage, and strategy-line scenes
+- `memory_hyperedges`: multi-node relations for setup, risk, strategy, regime, and symbol linkage
+- `memory_skill_cards`: reusable skill cards distilled from stable historical paths
 
-## Quick Start
+Retrieval is coarse-to-fine:
+1. SQLite FTS5 + structured filters
+2. scene / hyperedge expansion
+3. bandit-aware reminder reranking
 
-### 1. Initialize the runtime
+## Key Commands
 
 ```powershell
 python .\finance-journal-orchestrator\scripts\finance_journal_cli.py init
-python .\finance-journal-orchestrator\scripts\finance_journal_cli.py vault init
-```
-
-### 2. Parse or apply a natural-language journal entry
-
-```powershell
-python .\finance-journal-orchestrator\scripts\finance_journal_cli.py intake parse `
-  --mode trade `
-  --trade-date 20260410 `
-  --text "Bought 603083 around 43.2 today, looking for a CPO rebound, but I felt rushed intraday."
-
-python .\finance-journal-orchestrator\scripts\finance_journal_cli.py intake apply `
-  --mode plan `
-  --trade-date 20260410 `
-  --text "Plan to buy 603083 around 42.5-43.0 with a stop at 40 if the sector rotation confirms."
-```
-
-### 3. Run a session-based journaling flow
-
-```powershell
-python .\finance-journal-orchestrator\scripts\finance_journal_cli.py session turn `
-  --session-key user_a `
-  --trade-date 20260410 `
-  --text "I bought 603083 today"
-```
-
-The session flow can:
-
-- start a draft
-- continue missing-field follow-up
-- auto-apply when the facts are sufficient
-- reuse same-day market context and same-symbol thesis context when safe
-- enrich the latest plan or trade after the record is already stored
-
-### 4. Import statement facts first, add reasoning later
-
-```powershell
-python .\finance-journal-orchestrator\scripts\finance_journal_cli.py trade import-statement `
-  --file .\examples\statement_rows.csv `
-  --trade-date 20260415 `
-  --session-key user_a
-```
-
-This flow is built for a "facts first, reasons later" workflow:
-
-- align symbol, dates, prices, quantity, amount, and fees from standardized CSV or JSON rows
-- support broker-exported `.xls` text files such as GBK + tab-delimited exports from Chinese broker software
-- match an existing trade when possible
-- close an existing open trade when the statement row supplies the sell facts
-- return `assistant_message`, `pending_question`, `follow_up_queue`, and `completeness_backlog` so the conversation can continue with thesis, trigger, position sizing, emotion, and discipline details
-
-### 4b. Scan incomplete trades before running parallel follow-up polling
-
-```powershell
-python .\finance-journal-orchestrator\scripts\finance_journal_cli.py trade incomplete `
-  --status open `
-  --limit 200
-
-python .\finance-journal-orchestrator\scripts\generate_gateway_followups.py `
-  --root .\_runtime `
-  --status open `
-  --format markdown `
-  --max-groups 12 `
-  --max-singles 12 `
-  --output .\_runtime\artifacts\daily\20260413\gateway_followups.md
-```
-
-The backlog output highlights:
-
-- which trades are still missing blocking fields such as `thesis`
-- which subjective context fields are still missing, such as `user_focus`, `observed_signals`, `position_reason`, and `environment_tags`
-- which trades are related by same-day context or same-symbol thesis and can be polled in parallel on the gateway side
-- a readiness snapshot for self-evolution inputs
-
-### 5. Create a plan, log a trade, and export notes
-
-```powershell
-python .\finance-journal-orchestrator\scripts\finance_journal_cli.py plan create `
-  --ts-code 603083 `
-  --direction buy `
-  --thesis "Pullback into a 5-day moving average rebound setup" `
-  --logic-tags first-pullback,mean-reversion `
-  --buy-zone 42.5-43.0 `
-  --stop-loss 40.0 `
-  --valid-to 20260415
-
-python .\finance-journal-orchestrator\scripts\finance_journal_cli.py trade log `
-  --ts-code 603083 `
-  --buy-date 20260410 `
-  --buy-price 43.2 `
-  --thesis "Pullback rebound setup" `
-  --logic-type-tags first-pullback,theme-driven `
-  --pattern-tags moving-average-retest
-
+python .\finance-journal-orchestrator\scripts\finance_journal_cli.py session turn --session-key qq:user_a --trade-date 20260410 --text "Bought 603083 on a pullback setup"
+python .\finance-journal-orchestrator\scripts\finance_journal_cli.py trade import-statement --file .\examples\statement_rows.csv --trade-date 20260415 --session-key qq:user_a
+python .\finance-journal-orchestrator\scripts\finance_journal_cli.py evolution remind --logic-tags pullback,leader --pattern-tags ma_pullback --market-stage range --environment-tags repair_flow
+python .\finance-journal-orchestrator\scripts\finance_journal_cli.py memory rebuild
+python .\finance-journal-orchestrator\scripts\finance_journal_cli.py memory query --ts-code 603083 --market-stage range --tags pullback,repair_flow
+python .\finance-journal-orchestrator\scripts\finance_journal_cli.py memory skillize --trade-date 20260415 --lookback-days 365
 python .\finance-journal-orchestrator\scripts\finance_journal_cli.py vault sync --trade-date 20260415
 ```
 
-## Session and Polling Design
+## Design Notes
 
-The parser and follow-up system intentionally avoid turning every message into a long rigid questionnaire.
+- `TRADE_MEMORY_ARCHITECTURE.md`: concise design note for the EverOS / EverMemOS / HyperMem inspired memory stack
+- `TRADE_MEMORY_SYSTEM_PAPER.md`: paper-style architecture write-up with LaTeX-ready equations and implementation mapping
+- `IMPLEMENTED_FEATURES.md`: what is already done
+- `NOT_IMPLEMENTED_YET.md`: what remains intentionally open
 
-Current outputs include:
+## Repo Sync Policy
 
-- `standardized_record`: a soft-structured preview for indexing and review
-- `polling_bundle`: next question, missing-field queue, parsing hints, completion progress, and reuse metadata
-- `reflection_prompts`: post-fact prompts for lessons, mistakes, and behavioral review
-
-`polling_bundle` also includes:
-
-- `shared_context_hints`: tells the caller which answers may be reused across `trade_date`, `symbol`, or `strategy`
-- `parallel_question_groups`: tells the caller which related questions can be merged into one reply block
-
-This helps reduce repetitive polling, especially for:
-
-- same-day market context
-- repeated intraday trades on the same symbol
-- semi-systematic strategy lines where factor choice and activation logic are shared across several entries
-
-The same grouping logic is now also exposed through `trade incomplete` and `import-statement -> completeness_backlog`, so a gateway can batch-poll related trades instead of asking one row at a time.
-
-## Decision Context and Semi-Quant Workflows
-
-Records can persist `decision_context_json`, which currently supports:
-
-- user focus and observed signals
-- position reason and confidence
-- stress level, emotion notes, and mistake tags
-- market stage, environment tags, and risk boundaries
-- nested `strategy_context` for semi-quant or quant-adjacent workflows
-
-`strategy_context` can hold fields such as:
-
-- strategy line
-- strategy family
-- factor list
-- factor selection reason
-- activation reason
-- parameter version
-- portfolio role
-- subjective override notes
-
-The purpose is not to pretend the system is fully automated. The goal is to preserve the human override layer that still exists around factor selection, strategy activation, and tactical exceptions.
-
-## Information Monitoring
-
-The optional monitoring layer can:
-
-- add manual events
-- fetch events from configured URL adapters
-- generate a morning brief
-- support timeline pages, list pages, article pages, RSS, JSON feeds, and embedded JSON pages
-
-Current examples and presets still emphasize the China market because they match the default adapters and test data, but the architecture is adapter-based rather than hard-coded to one site.
-
-## Open Source Collaboration Files
-
-This repository now includes the standard public-project files expected on Git hosting platforms:
-
-- `LICENSE`
-- `CONTRIBUTING.md`
-- `CODE_OF_CONDUCT.md`
-- `SECURITY.md`
-- `SUPPORT.md`
-- `.github/ISSUE_TEMPLATE/`
-- `.github/pull_request_template.md`
-- `.github/workflows/ci.yml`
-- `.github/dependabot.yml`
+- Public GitHub (`origin/main`) receives the core code, tests, and documentation.
+- Private GitHub (`github-private/private-sync`) may additionally receive runtime data, broker statement exports, and local vault snapshots.
+- `_runtime*`, `*.db`, and broker statement spreadsheets stay ignored by default and should only be force-added for private syncs.
 
 ## Validation
-
-Current local validation commands:
 
 ```powershell
 python -m compileall finance_journal_core finance-journal-orchestrator\scripts tests
 python -m unittest discover -s tests -v
 ```
-
-## Additional Documents
-
-- OpenClaw cloud Git sync guide: `OPENCLAW_CLOUD_SYNC_WORKFLOW.md`
-- core trajectory self-evolution algorithm note (ZH): `trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.md`
-- core trajectory self-evolution algorithm note (EN): `trade-evolution-engine/references/trajectory-self-evolution-core-algorithm.en.md`
-- implemented capabilities: `IMPLEMENTED_FEATURES.md`
-- known gaps and next steps: `NOT_IMPLEMENTED_YET.md`
-- unified status and changelog: `FINANCE_JOURNAL_STATUS_AND_CHANGELOG.md`
-- framework purpose and vision: `FRAMEWORK_PURPOSE_AND_VISION.md`
-- community vision: `COMMUNITY_AGENT_LEDGER_VISION.md`
-- git sync guidance: `GIT_SYNC_WORKFLOW.md`
-
-## Notes
-
-- Tushare tokens are read from `TUSHARE_TOKEN` or `TS_TOKEN` when market data is enabled.
-- If networking is not available, pass `--disable-market-data` and use the journal offline.
-- Examples still use A-share-style identifiers because they match the current adapters and fixtures.
-- The framework focuses on journaling, review, and behavioral improvement rather than trade execution.

@@ -11,24 +11,6 @@ from typing import Any, Iterator
 
 
 SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS watchlist (
-    ts_code TEXT PRIMARY KEY,
-    name TEXT,
-    notes TEXT,
-    source TEXT DEFAULT 'manual',
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS keywords (
-    keyword TEXT PRIMARY KEY,
-    category TEXT NOT NULL DEFAULT 'industry',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS plans (
     plan_id TEXT PRIMARY KEY,
     ts_code TEXT NOT NULL,
@@ -119,26 +101,6 @@ CREATE INDEX IF NOT EXISTS idx_trades_dates ON trades(buy_date, sell_date);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_trades_code ON trades(ts_code);
 
-CREATE TABLE IF NOT EXISTS info_events (
-    event_id TEXT PRIMARY KEY,
-    ts_code TEXT,
-    name TEXT,
-    event_type TEXT NOT NULL,
-    priority TEXT NOT NULL,
-    headline TEXT NOT NULL,
-    summary TEXT,
-    source TEXT,
-    url TEXT,
-    published_at TEXT,
-    trade_date TEXT,
-    tags_json TEXT NOT NULL DEFAULT '[]',
-    raw_payload_json TEXT,
-    pushed_at TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_info_events_trade_date ON info_events(trade_date, priority);
-
 CREATE TABLE IF NOT EXISTS reviews (
     review_id TEXT PRIMARY KEY,
     trade_id TEXT NOT NULL,
@@ -176,6 +138,101 @@ CREATE TABLE IF NOT EXISTS health_reports (
 );
 
 CREATE INDEX IF NOT EXISTS idx_health_reports_period ON health_reports(period_kind, period_start, period_end);
+
+CREATE TABLE IF NOT EXISTS memory_cells (
+    memory_id TEXT PRIMARY KEY,
+    memory_kind TEXT NOT NULL,
+    source_entity_kind TEXT NOT NULL,
+    source_entity_id TEXT NOT NULL,
+    trade_date TEXT,
+    ts_code TEXT,
+    strategy_line TEXT,
+    market_stage TEXT,
+    title TEXT NOT NULL,
+    text_body TEXT NOT NULL,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    quality_json TEXT NOT NULL DEFAULT '{}',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_cells_trade_date ON memory_cells(trade_date, updated_at);
+CREATE INDEX IF NOT EXISTS idx_memory_cells_symbol ON memory_cells(ts_code, updated_at);
+CREATE INDEX IF NOT EXISTS idx_memory_cells_strategy ON memory_cells(strategy_line, updated_at);
+CREATE INDEX IF NOT EXISTS idx_memory_cells_kind ON memory_cells(memory_kind, updated_at);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_cells_fts USING fts5(
+    memory_id UNINDEXED,
+    title,
+    text_body,
+    tag_text,
+    strategy_line,
+    market_stage
+);
+
+CREATE TABLE IF NOT EXISTS memory_scenes (
+    scene_id TEXT PRIMARY KEY,
+    scene_key TEXT NOT NULL UNIQUE,
+    scene_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    trade_date TEXT,
+    ts_code TEXT,
+    strategy_line TEXT,
+    market_stage TEXT,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    memory_ids_json TEXT NOT NULL DEFAULT '[]',
+    stats_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_scenes_symbol ON memory_scenes(ts_code, updated_at);
+CREATE INDEX IF NOT EXISTS idx_memory_scenes_strategy ON memory_scenes(strategy_line, updated_at);
+
+CREATE TABLE IF NOT EXISTS memory_hyperedges (
+    edge_id TEXT PRIMARY KEY,
+    edge_key TEXT NOT NULL UNIQUE,
+    edge_type TEXT NOT NULL,
+    label TEXT NOT NULL,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memory_hyperedge_members (
+    membership_id TEXT PRIMARY KEY,
+    edge_id TEXT NOT NULL,
+    member_kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    member_role TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_hyperedge_members_edge ON memory_hyperedge_members(edge_id, member_kind, member_id);
+CREATE INDEX IF NOT EXISTS idx_memory_hyperedge_members_member ON memory_hyperedge_members(member_kind, member_id);
+
+CREATE TABLE IF NOT EXISTS memory_skill_cards (
+    skill_id TEXT PRIMARY KEY,
+    source_kind TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    intent TEXT NOT NULL,
+    trigger_conditions_json TEXT NOT NULL DEFAULT '[]',
+    do_not_use_when_json TEXT NOT NULL DEFAULT '[]',
+    evidence_trade_ids_json TEXT NOT NULL DEFAULT '[]',
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    bandit_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    summary_markdown TEXT NOT NULL DEFAULT '',
+    community_shareable INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_skill_cards_source ON memory_skill_cards(source_kind, source_id);
 
 CREATE TABLE IF NOT EXISTS journal_drafts (
     draft_id TEXT PRIMARY KEY,
@@ -243,10 +300,6 @@ MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
     },
     "journal_drafts": {
         "session_key": "TEXT",
-    },
-    "info_events": {
-        "url": "TEXT",
-        "raw_payload_json": "TEXT",
     },
 }
 

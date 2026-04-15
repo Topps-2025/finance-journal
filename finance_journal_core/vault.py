@@ -13,6 +13,8 @@ VAULT_FOLDERS = {
     "reviews": "03-reviews",
     "reports": "04-reports",
     "daily": "05-daily",
+    "memory": "06-memory",
+    "skills": "07-skills",
 }
 
 
@@ -68,50 +70,39 @@ def format_tags(*tag_lists: Any) -> list[str]:
 def render_decision_context(context: dict[str, Any] | None) -> list[str]:
     payload = dict(context or {})
     if not payload:
-        return ["- 暂无补充。"]
-    focus = payload.get("user_focus") or []
-    signals = payload.get("observed_signals") or []
-    env_tags = payload.get("environment_tags") or []
-    planned_zone = payload.get("planned_zone") if isinstance(payload.get("planned_zone"), dict) else {}
+        return ["- None yet."]
     strategy_context = payload.get("strategy_context") if isinstance(payload.get("strategy_context"), dict) else {}
+    planned_zone = payload.get("planned_zone") if isinstance(payload.get("planned_zone"), dict) else {}
     lines = [
-        f"- 关注切片: {', '.join(str(item) for item in focus) if focus else '-'}",
-        f"- 触发信号: {'；'.join(str(item) for item in signals) if signals else '-'}",
-        f"- 当时解读: {payload.get('interpretation') or '-'}",
-        f"- 市场阶段: {payload.get('market_stage') or '-'}",
-        f"- 环境标签: {', '.join(str(item) for item in env_tags) if env_tags else '-'}",
-        f"- 仓位理由: {payload.get('position_reason') or '-'}",
-        f"- 仓位比例: {payload.get('position_size_pct') if payload.get('position_size_pct') not in (None, '') else '-'}",
-        f"- 计划区间: 买={planned_zone.get('buy_zone') or '-'} / 卖={planned_zone.get('sell_zone') or '-'}",
-        f"- 风险边界: {payload.get('risk_boundary') or '-'}",
-        f"- 主观把握: {payload.get('position_confidence') if payload.get('position_confidence') not in (None, '') else '-'}",
-        f"- 紧张程度: {payload.get('stress_level') if payload.get('stress_level') not in (None, '') else '-'}",
-        f"- 情绪备注: {payload.get('emotion_notes') or '-'}",
-        f"- 失误标签: {', '.join(str(item) for item in payload.get('mistake_tags') or []) or '-'}",
+        f"- User focus: {', '.join(str(item) for item in payload.get('user_focus') or []) or '-'}",
+        f"- Observed signals: {', '.join(str(item) for item in payload.get('observed_signals') or []) or '-'}",
+        f"- Interpretation: {payload.get('interpretation') or '-'}",
+        f"- Position reason: {payload.get('position_reason') or '-'}",
+        f"- Position confidence: {payload.get('position_confidence') if payload.get('position_confidence') not in (None, '') else '-'}",
+        f"- Stress level: {payload.get('stress_level') if payload.get('stress_level') not in (None, '') else '-'}",
+        f"- Market stage: {payload.get('market_stage') or '-'}",
+        f"- Environment tags: {', '.join(str(item) for item in payload.get('environment_tags') or []) or '-'}",
+        f"- Planned zone: buy {planned_zone.get('buy_zone') or '-'} / sell {planned_zone.get('sell_zone') or '-'}",
+        f"- Risk boundary: {payload.get('risk_boundary') or '-'}",
+        f"- Emotion notes: {payload.get('emotion_notes') or '-'}",
+        f"- Mistake tags: {', '.join(str(item) for item in payload.get('mistake_tags') or []) or '-'}",
     ]
     if strategy_context:
-        factor_list = strategy_context.get("factor_list") or []
         lines.extend(
             [
-                f"- 策略条线: {strategy_context.get('strategy_line') or strategy_context.get('strategy_name') or strategy_context.get('strategy_id') or '-'}",
-                f"- 策略家族: {strategy_context.get('strategy_family') or '-'}",
-                f"- 核心因子: {', '.join(str(item) for item in factor_list) if factor_list else '-'}",
-                f"- 因子选择理由: {strategy_context.get('factor_selection_reason') or '-'}",
-                f"- 启用原因: {strategy_context.get('activation_reason') or '-'}",
-                f"- 参数版本: {strategy_context.get('parameter_version') or '-'}",
-                f"- 组合角色: {strategy_context.get('portfolio_role') or '-'}",
-                f"- 主观覆盖: {strategy_context.get('subjective_override') or '-'}",
+                f"- Strategy line: {strategy_context.get('strategy_line') or strategy_context.get('strategy_name') or strategy_context.get('strategy_id') or '-'}",
+                f"- Strategy family: {strategy_context.get('strategy_family') or '-'}",
+                f"- Factor list: {', '.join(str(item) for item in strategy_context.get('factor_list') or []) or '-'}",
+                f"- Activation reason: {strategy_context.get('activation_reason') or '-'}",
+                f"- Parameter version: {strategy_context.get('parameter_version') or '-'}",
+                f"- Subjective override: {strategy_context.get('subjective_override') or '-'}",
             ]
         )
     return lines
 
 
 def render_plan_note(plan: dict[str, Any]) -> str:
-    tags = format_tags(
-        "trade-plan",
-        json_loads(plan.get("logic_tags_json"), []),
-        json_loads(plan.get("environment_tags_json"), []),
-    )
+    tags = format_tags("trade-plan", json_loads(plan.get("logic_tags_json"), []), json_loads(plan.get("environment_tags_json"), []))
     header = frontmatter(
         {
             "note_type": "trade_plan",
@@ -127,33 +118,24 @@ def render_plan_note(plan: dict[str, Any]) -> str:
     lines = [
         header,
         "",
-        f"# 交易计划 | {plan.get('name') or plan.get('ts_code')}",
+        f"# Plan | {plan.get('name') or plan.get('ts_code')}",
         "",
-        "## 基本信息",
-        f"- 标的: {plan.get('name') or '-'} ({plan.get('ts_code') or '-'})",
-        f"- 方向: {plan.get('direction') or '-'}",
-        f"- 状态: {plan.get('status') or '-'}",
-        f"- 有效期: {plan.get('valid_from') or '-'} -> {plan.get('valid_to') or '-'}",
-        f"- 提醒时间: {plan.get('reminder_time') or '-'}",
+        "## Core",
+        f"- Symbol: {plan.get('name') or '-'} ({plan.get('ts_code') or '-'})",
+        f"- Direction: {plan.get('direction') or '-'}",
+        f"- Status: {plan.get('status') or '-'}",
+        f"- Thesis: {plan.get('thesis') or '-'}",
+        f"- Logic tags: {', '.join(json_loads(plan.get('logic_tags_json'), [])) or '-'}",
+        f"- Market stage: {plan.get('market_stage_tag') or '-'}",
+        f"- Environment tags: {', '.join(json_loads(plan.get('environment_tags_json'), [])) or '-'}",
+        f"- Buy zone: {plan.get('buy_zone') or '-'}",
+        f"- Sell zone: {plan.get('sell_zone') or '-'}",
+        f"- Stop loss: {plan.get('stop_loss') or '-'}",
         "",
-        "## 计划内容",
-        f"- 核心逻辑: {plan.get('thesis') or '-'}",
-        f"- 逻辑标签: {', '.join(json_loads(plan.get('logic_tags_json'), [])) or '-'}",
-        f"- 环境标签: {', '.join(json_loads(plan.get('environment_tags_json'), [])) or '-'}",
-        f"- 买入区间: {plan.get('buy_zone') or '-'}",
-        f"- 卖出区间: {plan.get('sell_zone') or '-'}",
-        f"- 止损条件: {plan.get('stop_loss') or '-'}",
-        f"- 计划持仓周期: {plan.get('holding_period') or '-'}",
-        "",
-        "## 用户视角快照",
+        "## Decision Context",
         *render_decision_context(json_loads(plan.get("decision_context_json"), {})),
         "",
-        "## 纪律检查",
-        "- 开仓前：这笔交易是否来自盘前计划？",
-        "- 开仓时：实际买点是否偏离计划区间？",
-        "- 卖出时：是按规则卖出，还是情绪卖出？",
-        "",
-        "## 备注",
+        "## Notes",
         plan.get("notes") or "-",
         "",
     ]
@@ -181,59 +163,41 @@ def render_trade_note(trade: dict[str, Any], plan: dict[str, Any] | None = None,
     lines = [
         header,
         "",
-        f"# 交易复盘 | {trade.get('name') or trade.get('ts_code')}",
+        f"# Trade | {trade.get('name') or trade.get('ts_code')}",
         "",
-        "## 事实记录",
-        f"- 标的: {trade.get('name') or '-'} ({trade.get('ts_code') or '-'})",
-        f"- 买入: {trade.get('buy_date') or '-'} @ {trade.get('buy_price') if trade.get('buy_price') is not None else '-'}",
-        f"- 卖出: {trade.get('sell_date') or '-'} @ {trade.get('sell_price') if trade.get('sell_price') is not None else '-'}",
-        f"- 持仓天数: {trade.get('holding_days') if trade.get('holding_days') is not None else '-'}",
-        f"- 实际收益: {trade.get('actual_return_pct') if trade.get('actual_return_pct') is not None else '-'}%",
-        f"- 选股基准收益: {trade.get('benchmark_return_pct') if trade.get('benchmark_return_pct') is not None else '-'}%",
-        f"- 操作绩效差值: {trade.get('timing_alpha_pct') if trade.get('timing_alpha_pct') is not None else '-'}%",
+        "## Facts",
+        f"- Buy: {trade.get('buy_date') or '-'} @ {trade.get('buy_price') if trade.get('buy_price') is not None else '-'}",
+        f"- Sell: {trade.get('sell_date') or '-'} @ {trade.get('sell_price') if trade.get('sell_price') is not None else '-'}",
+        f"- Status: {trade.get('status') or '-'}",
+        f"- Actual return: {trade.get('actual_return_pct') if trade.get('actual_return_pct') is not None else '-'}%",
+        f"- Timing alpha: {trade.get('timing_alpha_pct') if trade.get('timing_alpha_pct') is not None else '-'}%",
+        f"- Holding days: {trade.get('holding_days') if trade.get('holding_days') is not None else '-'}",
         "",
-        "## 计划对照",
-        f"- 关联计划: {plan.get('plan_id') if plan else '-'}",
-        f"- 计划逻辑: {plan.get('thesis') if plan else '-'}",
-        f"- 买入偏离: {trade.get('plan_execution_deviation_json') or '-'}",
+        "## Setup",
+        f"- Thesis: {trade.get('thesis') or '-'}",
+        f"- Logic tags: {', '.join(logic_tags) or '-'}",
+        f"- Pattern tags: {', '.join(pattern_tags) or '-'}",
+        f"- Market stage: {trade.get('market_stage_tag') or '-'}",
+        f"- Environment tags: {', '.join(env_tags) or '-'}",
+        f"- Linked plan: {plan.get('plan_id') if plan else '-'}",
         "",
-        "## 交易理由",
-        f"- 买入理由: {trade.get('buy_reason') or trade.get('thesis') or '-'}",
-        f"- 卖出理由: {trade.get('sell_reason') or '-'}",
-        f"- 买入技术位置: {trade.get('buy_position') or '-'}",
-        f"- 卖出技术位置: {trade.get('sell_position') or '-'}",
-        f"- 逻辑标签: {', '.join(logic_tags) or '-'}",
-        f"- 形态标签: {', '.join(pattern_tags) or '-'}",
-        f"- 环境标签: {', '.join(env_tags) or '-'}",
-        "",
-        "## 用户视角快照",
+        "## Decision Context",
         *render_decision_context(json_loads(trade.get("decision_context_json"), {})),
         "",
-        "## 行为复盘",
-        f"- 情绪备注: {trade.get('emotion_notes') or '-'}",
-        f"- 失误标签: {', '.join(mistake_tags) or '-'}",
-        f"- 经验沉淀: {trade.get('lessons_learned') or '-'}",
-        f"- 其他备注: {trade.get('notes') or '-'}",
+        "## Reflection",
+        f"- Emotion notes: {trade.get('emotion_notes') or '-'}",
+        f"- Mistake tags: {', '.join(mistake_tags) or '-'}",
+        f"- Lessons learned: {trade.get('lessons_learned') or '-'}",
+        f"- Notes: {trade.get('notes') or '-'}",
     ]
     if review_rows:
-        lines.extend(["", "## 卖出后回顾"])
+        lines.extend(["", "## Post-exit Reviews"])
         for review in review_rows:
             lines.append(
                 f"- {review.get('review_due_date') or '-'} | {review.get('review_type') or '-'} | "
-                f"max_gain={review.get('max_gain_pct') if review.get('max_gain_pct') is not None else '-'}% | "
-                f"max_drawdown={review.get('max_drawdown_pct') if review.get('max_drawdown_pct') is not None else '-'}% | "
-                f"反馈={review.get('feedback') or '-'}"
+                f"feedback={review.get('feedback') or '-'}"
             )
-    lines.extend(
-        [
-            "",
-            "## 手工补充",
-            "- 这笔交易最值得重复的地方：",
-            "- 这笔交易最需要纠正的地方：",
-            "- 如果重来一次，我会怎么做：",
-            "",
-        ]
-    )
+    lines.extend(["", "## Manual Follow-up", "- Best reusable part:", "- Most dangerous repeat error:", "- What to do differently next time:", ""])
     return "\n".join(lines)
 
 
@@ -251,31 +215,20 @@ def render_review_note(review: dict[str, Any], trade: dict[str, Any] | None = No
     lines = [
         header,
         "",
-        f"# 卖出回顾 | {review.get('name') or review.get('ts_code')}",
+        f"# Review | {review.get('name') or review.get('ts_code')}",
         "",
-        "## 回顾摘要",
-        f"- 卖出日: {review.get('sell_date') or '-'}",
-        f"- 回顾到期日: {review.get('review_due_date') or '-'}",
-        f"- 回顾类型: {review.get('review_type') or '-'}",
-        f"- 卖出价: {review.get('sell_price') if review.get('sell_price') is not None else '-'}",
-        f"- 窗口最高价: {review.get('highest_price') if review.get('highest_price') is not None else '-'}",
-        f"- 窗口最低价: {review.get('lowest_price') if review.get('lowest_price') is not None else '-'}",
-        f"- 最大后续涨幅: {review.get('max_gain_pct') if review.get('max_gain_pct') is not None else '-'}%",
-        f"- 最大后续回撤: {review.get('max_drawdown_pct') if review.get('max_drawdown_pct') is not None else '-'}%",
+        "## Snapshot",
+        f"- Sell date: {review.get('sell_date') or '-'}",
+        f"- Review due: {review.get('review_due_date') or '-'}",
+        f"- Review type: {review.get('review_type') or '-'}",
+        f"- Max gain after exit: {review.get('max_gain_pct') if review.get('max_gain_pct') is not None else '-'}%",
+        f"- Max drawdown after exit: {review.get('max_drawdown_pct') if review.get('max_drawdown_pct') is not None else '-'}%",
         "",
-        "## 当时卖出理由",
-        f"- {trade.get('sell_reason') if trade else '-'}",
-        "",
-        "## 系统提问",
-        review.get("prompt_text") or "-",
-        "",
-        "## 用户反馈",
-        f"- 反馈: {review.get('feedback') or '-'}",
-        f"- 权重动作: {review.get('weight_action') or '-'}",
-        "",
-        "## 手工补充",
-        "- 这次卖出是纪律正确，还是处理过早？",
-        "- 未来遇到同类图形时，我应该保留哪些判断条件？",
+        "## Context",
+        f"- Original sell reason: {trade.get('sell_reason') if trade else '-'}",
+        f"- System prompt: {review.get('prompt_text') or '-'}",
+        f"- Feedback: {review.get('feedback') or '-'}",
+        f"- Weight action: {review.get('weight_action') or '-'}",
         "",
     ]
     return "\n".join(lines)
@@ -296,17 +249,80 @@ def render_health_report_note(report: dict[str, Any]) -> str:
     lines = [
         header,
         "",
-        f"# 行为体检 | {report.get('period_start') or '-'} -> {report.get('period_end') or '-'}",
+        f"# Health Report | {report.get('period_start') or '-'} -> {report.get('period_end') or '-'}",
         "",
-        f"- 闭环交易数: {report.get('trade_count') or 0}",
-        f"- 有效计划数: {report.get('plan_count') or 0}",
-        f"- 计划执行率: {metrics.get('plan_execution_rate_pct') if metrics.get('plan_execution_rate_pct') is not None else '-'}%",
-        f"- 计划外交易占比: {metrics.get('off_plan_trade_ratio_pct') if metrics.get('off_plan_trade_ratio_pct') is not None else '-'}%",
-        f"- 持仓周期偏离: {metrics.get('holding_bias_pct') if metrics.get('holding_bias_pct') is not None else '-'}%",
-        f"- 止损执行率: {metrics.get('stop_loss_execution_rate_pct') if metrics.get('stop_loss_execution_rate_pct') is not None else '-'}%",
+        f"- Closed trades: {report.get('trade_count') or 0}",
+        f"- Plans: {report.get('plan_count') or 0}",
+        f"- Plan execution rate: {metrics.get('plan_execution_rate_pct') if metrics.get('plan_execution_rate_pct') is not None else '-'}%",
+        f"- Off-plan ratio: {metrics.get('off_plan_trade_ratio_pct') if metrics.get('off_plan_trade_ratio_pct') is not None else '-'}%",
         "",
-        "## 报告正文",
+        "## Body",
         report.get("markdown") or "-",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_memory_note(memory_row: dict[str, Any]) -> str:
+    tags = format_tags("trade-memory", *json_loads(memory_row.get("tags_json"), []))
+    header = frontmatter(
+        {
+            "note_type": "memory_cell",
+            "memory_id": memory_row.get("memory_id") or "",
+            "memory_kind": memory_row.get("memory_kind") or "",
+            "source_entity_kind": memory_row.get("source_entity_kind") or "",
+            "source_entity_id": memory_row.get("source_entity_id") or "",
+            "ts_code": memory_row.get("ts_code") or "",
+            "trade_date": memory_row.get("trade_date") or "",
+            "tags": tags,
+        }
+    )
+    summary = json_loads(memory_row.get("summary_json"), {}) or {}
+    quality = json_loads(memory_row.get("quality_json"), {}) or {}
+    lines = [
+        header,
+        "",
+        f"# Memory Cell | {memory_row.get('title') or memory_row.get('memory_id')}",
+        "",
+        "## Summary",
+        f"- Trade date: {memory_row.get('trade_date') or '-'}",
+        f"- Symbol: {memory_row.get('ts_code') or '-'}",
+        f"- Strategy line: {memory_row.get('strategy_line') or '-'}",
+        f"- Market stage: {memory_row.get('market_stage') or '-'}",
+        f"- Summary json: {summary}",
+        f"- Quality json: {quality}",
+        "",
+        "## Text",
+        memory_row.get("text_body") or "-",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_skill_note(skill_row: dict[str, Any]) -> str:
+    tags = format_tags("memory-skill", *json_loads(skill_row.get("trigger_conditions_json"), []))
+    header = frontmatter(
+        {
+            "note_type": "memory_skill_card",
+            "skill_id": skill_row.get("skill_id") or "",
+            "source_kind": skill_row.get("source_kind") or "",
+            "source_id": skill_row.get("source_id") or "",
+            "sample_size": skill_row.get("sample_size") or 0,
+            "community_shareable": bool(skill_row.get("community_shareable")),
+            "tags": tags,
+        }
+    )
+    lines = [
+        header,
+        "",
+        f"# Skill Card | {skill_row.get('title') or skill_row.get('skill_id')}",
+        "",
+        f"- Intent: {skill_row.get('intent') or '-'}",
+        f"- Trigger conditions: {', '.join(json_loads(skill_row.get('trigger_conditions_json'), [])) or '-'}",
+        f"- Do not use when: {', '.join(json_loads(skill_row.get('do_not_use_when_json'), [])) or '-'}",
+        f"- Evidence trades: {', '.join(json_loads(skill_row.get('evidence_trade_ids_json'), [])) or '-'}",
+        "",
+        skill_row.get("summary_markdown") or "-",
         "",
     ]
     return "\n".join(lines)
@@ -317,7 +333,8 @@ def render_daily_note(
     plans: list[dict[str, Any]],
     trades: list[dict[str, Any]],
     reviews: list[dict[str, Any]],
-    events: list[dict[str, Any]],
+    memory_cells: list[dict[str, Any]],
+    skill_cards: list[dict[str, Any]],
 ) -> str:
     header = frontmatter(
         {
@@ -326,88 +343,73 @@ def render_daily_note(
             "tags": ["daily-journal", trade_date],
         }
     )
-    lines = [
-        header,
-        "",
-        f"# 每日交易复盘 | {trade_date}",
-        "",
-        "## 今日计划",
-    ]
+    lines = [header, "", f"# Daily Journal | {trade_date}", "", "## Plans"]
     if plans:
         for plan in plans:
-            lines.append(
-                f"- {plan.get('name') or plan.get('ts_code')}: {plan.get('thesis') or '-'} | 状态={plan.get('status') or '-'} | 有效期至 {plan.get('valid_to') or '-'}"
-            )
+            lines.append(f"- {plan.get('name') or plan.get('ts_code')}: {plan.get('thesis') or '-'}")
     else:
-        lines.append("- 今日无计划记录。")
+        lines.append("- No active plans.")
 
-    lines.extend(["", "## 今日交易"])
+    lines.extend(["", "## Trades"])
     if trades:
         for trade in trades:
             lines.append(
-                f"- {trade.get('name') or trade.get('ts_code')}: 买 {trade.get('buy_price') if trade.get('buy_price') is not None else '-'} / "
-                f"卖 {trade.get('sell_price') if trade.get('sell_price') is not None else '-'} / "
-                f"收益 {trade.get('actual_return_pct') if trade.get('actual_return_pct') is not None else '-'}%"
+                f"- {trade.get('name') or trade.get('ts_code')}: "
+                f"buy {trade.get('buy_price') if trade.get('buy_price') is not None else '-'} / "
+                f"sell {trade.get('sell_price') if trade.get('sell_price') is not None else '-'} / "
+                f"return {trade.get('actual_return_pct') if trade.get('actual_return_pct') is not None else '-'}%"
             )
     else:
-        lines.append("- 今日无交易记录。")
+        lines.append("- No trades.")
 
-    lines.extend(["", "## 卖出回顾"])
+    lines.extend(["", "## Reviews"])
     if reviews:
         for review in reviews:
-            lines.append(
-                f"- {review.get('name') or review.get('ts_code')}: {review.get('review_type') or '-'} | 反馈={review.get('feedback') or '-'}"
-            )
+            lines.append(f"- {review.get('name') or review.get('ts_code')}: {review.get('review_type') or '-'} | feedback={review.get('feedback') or '-'}")
     else:
-        lines.append("- 今日无回顾记录。")
+        lines.append("- No reviews.")
 
-    lines.extend(["", "## 可选事件参考"])
-    if events:
-        for event in events[:10]:
-            lines.append(f"- {event.get('headline') or '-'}")
+    lines.extend(["", "## Memory Recall"])
+    if memory_cells:
+        for item in memory_cells[:8]:
+            lines.append(f"- {item.get('title') or item.get('memory_id')} | score={item.get('score') if item.get('score') is not None else '-'}")
     else:
-        lines.append("- 今日未记录事件，或事件模块未启用。")
+        lines.append("- No long-term memory highlights yet.")
 
-    lines.extend(
-        [
-            "",
-            "## 手工复盘",
-            "- 今天做对了什么：",
-            "- 今天最大的计划偏离：",
-            "- 今天最典型的情绪反应：",
-            "- 明天必须执行的一条纪律：",
-            "",
-        ]
-    )
+    lines.extend(["", "## Skill Cards"])
+    if skill_cards:
+        for item in skill_cards[:5]:
+            lines.append(f"- {item.get('title') or item.get('skill_id')} | samples={item.get('sample_size') or 0}")
+    else:
+        lines.append("- No skill cards yet.")
+
+    lines.extend(["", "## Manual Reflection", "- What repeated memory mattered most today?", "- Which risk pattern almost came back?", "- What should be solidified into a reusable skill?", ""])
     return "\n".join(lines)
 
 
-def render_dashboard_note(recent_trades: list[dict[str, Any]], recent_reports: list[dict[str, Any]]) -> str:
+def render_dashboard_note(recent_trades: list[dict[str, Any]], recent_reports: list[dict[str, Any]], recent_skills: list[dict[str, Any]] | None = None) -> str:
     header = frontmatter({"note_type": "dashboard", "tags": ["dashboard", "trade-journal"]})
-    lines = [
-        header,
-        "",
-        "# 交易复盘总览",
-        "",
-        "## 最近交易",
-    ]
+    lines = [header, "", "# Finance Journal Dashboard", "", "## Recent Trades"]
     if recent_trades:
         for trade in recent_trades[:20]:
             lines.append(
                 f"- {trade.get('buy_date') or '-'} | {trade.get('name') or trade.get('ts_code')} | "
-                f"收益 {trade.get('actual_return_pct') if trade.get('actual_return_pct') is not None else '-'}% | "
-                f"状态 {trade.get('status') or '-'}"
+                f"return {trade.get('actual_return_pct') if trade.get('actual_return_pct') is not None else '-'}% | "
+                f"status {trade.get('status') or '-'}"
             )
     else:
-        lines.append("- 暂无交易记录。")
-
-    lines.extend(["", "## 最近体检"])
+        lines.append("- No trades yet.")
+    lines.extend(["", "## Recent Reports"])
     if recent_reports:
         for report in recent_reports[:12]:
-            lines.append(
-                f"- {report.get('period_start') or '-'} -> {report.get('period_end') or '-'} | {report.get('period_kind') or '-'}"
-            )
+            lines.append(f"- {report.get('period_start') or '-'} -> {report.get('period_end') or '-'} | {report.get('period_kind') or '-'}")
     else:
-        lines.append("- 暂无体检报告。")
+        lines.append("- No health reports yet.")
+    lines.extend(["", "## Recent Skill Cards"])
+    if recent_skills:
+        for skill in recent_skills[:10]:
+            lines.append(f"- {skill.get('title') or skill.get('skill_id')} | samples={skill.get('sample_size') or 0}")
+    else:
+        lines.append("- No skill cards yet.")
     lines.append("")
     return "\n".join(lines)

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -25,37 +25,29 @@ def _parse_json_argument(text: str | None) -> dict[str, Any] | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Finance Journal OpenClaw skill CLI")
     parser.add_argument("--root", help="Runtime root for data/artifacts")
-    parser.add_argument("--disable-market-data", action="store_true", help="Do not call Tushare")
+    parser.add_argument("--disable-market-data", action="store_true", help="Do not call market data providers")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("init", help="Initialize runtime folders and SQLite schema")
 
     intake = subparsers.add_parser("intake", help="Parse and apply non-standard journal text")
     intake_sub = intake.add_subparsers(dest="action", required=True)
-    intake_parse = intake_sub.add_parser("parse")
-    intake_parse.add_argument("--text", required=True)
-    intake_parse.add_argument("--mode", choices=["auto", "trade", "plan"], default="auto")
-    intake_parse.add_argument("--trade-date")
-    intake_apply = intake_sub.add_parser("apply")
-    intake_apply.add_argument("--text", required=True)
-    intake_apply.add_argument("--mode", choices=["auto", "trade", "plan"], default="auto")
-    intake_apply.add_argument("--trade-date")
-    intake_draft_start = intake_sub.add_parser("draft-start")
-    intake_draft_start.add_argument("--text", required=True)
-    intake_draft_start.add_argument("--mode", choices=["auto", "trade", "plan"], default="auto")
-    intake_draft_start.add_argument("--trade-date")
-    intake_draft_start.add_argument("--session-key")
+    for action_name in ("parse", "apply", "draft-start"):
+        action = intake_sub.add_parser(action_name)
+        action.add_argument("--text", required=True)
+        action.add_argument("--mode", choices=["auto", "trade", "plan"], default="auto")
+        action.add_argument("--trade-date")
+        if action_name == "draft-start":
+            action.add_argument("--session-key")
     intake_draft_reply = intake_sub.add_parser("draft-reply")
     intake_draft_reply.add_argument("draft_id", nargs="?")
     intake_draft_reply.add_argument("--text", required=True)
     intake_draft_reply.add_argument("--no-apply-if-ready", action="store_true")
     intake_draft_reply.add_argument("--session-key")
-    intake_draft_show = intake_sub.add_parser("draft-show")
-    intake_draft_show.add_argument("draft_id", nargs="?")
-    intake_draft_show.add_argument("--session-key")
-    intake_draft_apply = intake_sub.add_parser("draft-apply")
-    intake_draft_apply.add_argument("draft_id", nargs="?")
-    intake_draft_apply.add_argument("--session-key")
+    for action_name in ("draft-show", "draft-apply"):
+        action = intake_sub.add_parser(action_name)
+        action.add_argument("draft_id", nargs="?")
+        action.add_argument("--session-key")
     intake_draft_list = intake_sub.add_parser("draft-list")
     intake_draft_list.add_argument("--status")
     intake_draft_list.add_argument("--limit", type=int, default=20)
@@ -65,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     intake_draft_cancel.add_argument("--reason", default="")
     intake_draft_cancel.add_argument("--session-key")
 
-    vault = subparsers.add_parser("vault", help="Manage Obsidian-style markdown vault")
+    vault = subparsers.add_parser("vault", help="Manage markdown vault exports")
     vault_sub = vault.add_subparsers(dest="action", required=True)
     vault_sub.add_parser("init")
     vault_sync = vault_sub.add_parser("sync")
@@ -81,74 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     vault_review.add_argument("review_id")
     vault_report = vault_sub.add_parser("report")
     vault_report.add_argument("report_id")
+    vault_memory = vault_sub.add_parser("memory")
+    vault_memory.add_argument("memory_id")
+    vault_skill = vault_sub.add_parser("skill")
+    vault_skill.add_argument("skill_id")
     vault_sub.add_parser("dashboard")
-
-    watchlist = subparsers.add_parser("watchlist", help="Manage watchlist")
-    watchlist_sub = watchlist.add_subparsers(dest="action", required=True)
-    watch_add = watchlist_sub.add_parser("add")
-    watch_add.add_argument("ts_code")
-    watch_add.add_argument("--name")
-    watch_add.add_argument("--notes", default="")
-    watch_add.add_argument("--source", default="manual")
-    watchlist_sub.add_parser("list")
-    watch_remove = watchlist_sub.add_parser("remove")
-    watch_remove.add_argument("ts_code")
-
-    keyword = subparsers.add_parser("keyword", help="Manage topic keywords")
-    keyword_sub = keyword.add_subparsers(dest="action", required=True)
-    keyword_add = keyword_sub.add_parser("add")
-    keyword_add.add_argument("keyword")
-    keyword_add.add_argument("--category", default="industry")
-    keyword_sub.add_parser("list")
-    keyword_remove = keyword_sub.add_parser("remove")
-    keyword_remove.add_argument("keyword")
-
-    event = subparsers.add_parser("event", help="Manage info events")
-    event_sub = event.add_subparsers(dest="action", required=True)
-    event_add = event_sub.add_parser("add")
-    event_add.add_argument("--type", required=True, dest="event_type")
-    event_add.add_argument("--headline", required=True)
-    event_add.add_argument("--summary", default="")
-    event_add.add_argument("--ts-code")
-    event_add.add_argument("--name")
-    event_add.add_argument("--priority", default="normal")
-    event_add.add_argument("--source", default="manual")
-    event_add.add_argument("--url", default="")
-    event_add.add_argument("--published-at")
-    event_add.add_argument("--trade-date")
-    event_add.add_argument("--tags", default="")
-    event_fetch = event_sub.add_parser("fetch")
-    event_fetch.add_argument("--start-date")
-    event_fetch.add_argument("--end-date")
-    event_fetch_url = event_sub.add_parser("fetch-url")
-    event_fetch_url.add_argument("--url", required=True)
-    event_fetch_url.add_argument("--type", default="news", dest="event_type")
-    event_fetch_url.add_argument("--source", default="url_fetch")
-    event_fetch_url.add_argument("--mode", default="auto")
-    event_fetch_url.add_argument("--ts-code")
-    event_fetch_url.add_argument("--name")
-    event_fetch_url.add_argument("--keyword")
-    event_fetch_url.add_argument("--trade-date")
-    event_fetch_url.add_argument("--priority", default="normal")
-    event_fetch_url.add_argument("--limit", type=int, default=20)
-    event_fetch_url.add_argument("--items-path", default="")
-    event_fetch_url.add_argument("--headline-path", default="")
-    event_fetch_url.add_argument("--summary-path", default="")
-    event_fetch_url.add_argument("--published-path", default="")
-    event_fetch_url.add_argument("--url-path", default="")
-    event_fetch_url.add_argument("--include-patterns", default="")
-    event_fetch_url.add_argument("--exclude-patterns", default="")
-    event_fetch_url.add_argument("--follow-article", action="store_true")
-    event_fetch_url.add_argument("--min-headline-length", type=int)
-    event_fetch_url.add_argument("--summary-lines", type=int)
-    event_fetch_url.add_argument("--ignore-tokens", default="")
-    event_fetch_url.add_argument("--drop-patterns", default="")
-    event_fetch_url.add_argument("--same-domain-only", action="store_true")
-    event_fetch_url.add_argument("--script-markers", default="")
-    event_list = event_sub.add_parser("list")
-    event_list.add_argument("--trade-date")
-    event_list.add_argument("--priority")
-    event_list.add_argument("--limit", type=int, default=50)
 
     plan = subparsers.add_parser("plan", help="Manage trade plans")
     plan_sub = plan.add_subparsers(dest="action", required=True)
@@ -191,12 +120,6 @@ def build_parser() -> argparse.ArgumentParser:
     plan_ref.add_argument("--environment-tags", default="")
     plan_ref.add_argument("--lookback-days", type=int, default=365)
     plan_ref.add_argument("--trade-date")
-
-    brief = subparsers.add_parser("brief", help="Generate morning brief")
-    brief_sub = brief.add_subparsers(dest="action", required=True)
-    brief_generate = brief_sub.add_parser("generate")
-    brief_generate.add_argument("--trade-date")
-    brief_generate.add_argument("--fetch-events", action="store_true")
 
     trade = subparsers.add_parser("trade", help="Manage trade journal")
     trade_sub = trade.add_subparsers(dest="action", required=True)
@@ -295,6 +218,23 @@ def build_parser() -> argparse.ArgumentParser:
     evolution_remind.add_argument("--lookback-days", type=int, default=365)
     evolution_remind.add_argument("--min-samples", type=int, default=2)
 
+    memory = subparsers.add_parser("memory", help="Manage long-term trade memory")
+    memory_sub = memory.add_subparsers(dest="action", required=True)
+    memory_rebuild = memory_sub.add_parser("rebuild")
+    memory_rebuild.add_argument("--limit", type=int, default=0)
+    memory_query = memory_sub.add_parser("query")
+    memory_query.add_argument("--text", default="")
+    memory_query.add_argument("--ts-code")
+    memory_query.add_argument("--strategy-line")
+    memory_query.add_argument("--market-stage")
+    memory_query.add_argument("--tags", default="")
+    memory_query.add_argument("--trade-date")
+    memory_query.add_argument("--limit", type=int, default=8)
+    memory_skillize = memory_sub.add_parser("skillize")
+    memory_skillize.add_argument("--trade-date")
+    memory_skillize.add_argument("--lookback-days", type=int, default=365)
+    memory_skillize.add_argument("--min-samples", type=int, default=2)
+
     schedule = subparsers.add_parser("schedule", help="Run scheduler checks")
     schedule.add_argument("--now", help="Current timestamp, format YYYY-MM-DDTHH:MM")
     schedule.add_argument("--force", action="store_true")
@@ -369,80 +309,12 @@ def main(argv: list[str] | None = None, anchor_path: Path | None = None) -> int:
             _print_json(app.export_review_note(args.review_id))
         elif args.action == "report":
             _print_json(app.export_report_note(args.report_id))
+        elif args.action == "memory":
+            _print_json(app.export_memory_note(args.memory_id))
+        elif args.action == "skill":
+            _print_json(app.export_skill_note(args.skill_id))
         else:
             _print_json(app.export_dashboard_note())
-        return 0
-
-    if args.command == "watchlist":
-        if args.action == "add":
-            _print_json(app.add_watchlist(args.ts_code, name=args.name, notes=args.notes, source=args.source))
-        elif args.action == "list":
-            _print_json(app.list_watchlist())
-        else:
-            app.remove_watchlist(args.ts_code)
-            print(f"watchlist removed: {args.ts_code}")
-        return 0
-
-    if args.command == "keyword":
-        if args.action == "add":
-            _print_json(app.add_keyword(args.keyword, category=args.category))
-        elif args.action == "list":
-            _print_json(app.list_keywords())
-        else:
-            app.remove_keyword(args.keyword)
-            print(f"keyword removed: {args.keyword}")
-        return 0
-
-    if args.command == "event":
-        if args.action == "add":
-            _print_json(
-                app.add_info_event(
-                    event_type=args.event_type,
-                    headline=args.headline,
-                    summary=args.summary,
-                    ts_code=args.ts_code,
-                    name=args.name,
-                    priority=args.priority,
-                    source=args.source,
-                    url=args.url,
-                    published_at=args.published_at,
-                    trade_date=args.trade_date,
-                    tags=args.tags,
-                )
-            )
-        elif args.action == "fetch":
-            _print_json(app.fetch_watchlist_events(start_date=args.start_date, end_date=args.end_date))
-        elif args.action == "fetch-url":
-            _print_json(
-                app.fetch_url_events(
-                    url=args.url,
-                    event_type=args.event_type,
-                    source=args.source,
-                    parser_mode=args.mode,
-                    ts_code=args.ts_code,
-                    name=args.name,
-                    keyword=args.keyword,
-                    trade_date=args.trade_date,
-                    priority=args.priority,
-                    limit=args.limit,
-                    items_path=args.items_path,
-                    headline_path=args.headline_path,
-                    summary_path=args.summary_path,
-                    published_path=args.published_path,
-                    url_path=args.url_path,
-                    include_patterns=args.include_patterns,
-                    exclude_patterns=args.exclude_patterns,
-                    follow_article=args.follow_article,
-                    min_headline_length=args.min_headline_length,
-                    summary_lines=args.summary_lines,
-                    ignore_tokens=args.ignore_tokens,
-                    drop_patterns=args.drop_patterns,
-                    same_domain_only=args.same_domain_only,
-                    script_markers=args.script_markers,
-                )
-            )
-        else:
-            _print_json(app.list_info_events(trade_date=args.trade_date, priority=args.priority, limit=args.limit))
         return 0
 
     if args.command == "plan":
@@ -474,14 +346,7 @@ def main(argv: list[str] | None = None, anchor_path: Path | None = None) -> int:
         elif args.action == "status":
             _print_json(app.update_plan_status(args.plan_id, status=args.status, trade_id=args.trade_id, reason=args.reason))
         elif args.action == "enrich":
-            _print_json(
-                app.enrich_plan_from_text(
-                    args.plan_id,
-                    args.text,
-                    trade_date=args.trade_date,
-                    lookback_days=args.lookback_days,
-                )
-            )
+            _print_json(app.enrich_plan_from_text(args.plan_id, args.text, trade_date=args.trade_date, lookback_days=args.lookback_days))
         else:
             _print_json(
                 app.generate_reference(
@@ -493,10 +358,6 @@ def main(argv: list[str] | None = None, anchor_path: Path | None = None) -> int:
                     write_artifact=True,
                 )
             )
-        return 0
-
-    if args.command == "brief":
-        _print_json(app.generate_morning_brief(trade_date=args.trade_date, fetch_events=args.fetch_events))
         return 0
 
     if args.command == "trade":
@@ -547,22 +408,9 @@ def main(argv: list[str] | None = None, anchor_path: Path | None = None) -> int:
                 )
             )
         elif args.action == "enrich":
-            _print_json(
-                app.enrich_trade_from_text(
-                    args.trade_id,
-                    args.text,
-                    trade_date=args.trade_date,
-                    lookback_days=args.lookback_days,
-                )
-            )
+            _print_json(app.enrich_trade_from_text(args.trade_id, args.text, trade_date=args.trade_date, lookback_days=args.lookback_days))
         elif args.action == "import-statement":
-            _print_json(
-                app.import_statement_file(
-                    args.file,
-                    trade_date=args.trade_date,
-                    session_key=args.session_key,
-                )
-            )
+            _print_json(app.import_statement_file(args.file, trade_date=args.trade_date, session_key=args.session_key))
         elif args.action == "incomplete":
             _print_json(
                 app.build_trade_follow_up_backlog(
@@ -592,21 +440,9 @@ def main(argv: list[str] | None = None, anchor_path: Path | None = None) -> int:
 
     if args.command == "evolution":
         if args.action == "report":
-            _print_json(
-                app.generate_evolution_report(
-                    trade_date=args.trade_date,
-                    lookback_days=args.lookback_days,
-                    min_samples=args.min_samples,
-                )
-            )
+            _print_json(app.generate_evolution_report(trade_date=args.trade_date, lookback_days=args.lookback_days, min_samples=args.min_samples))
         elif args.action == "portrait":
-            _print_json(
-                app.generate_style_portrait(
-                    trade_date=args.trade_date,
-                    lookback_days=args.lookback_days,
-                    min_samples=args.min_samples,
-                )
-            )
+            _print_json(app.generate_style_portrait(trade_date=args.trade_date, lookback_days=args.lookback_days, min_samples=args.min_samples))
         else:
             _print_json(
                 app.generate_evolution_reminder(
@@ -622,21 +458,32 @@ def main(argv: list[str] | None = None, anchor_path: Path | None = None) -> int:
             )
         return 0
 
+    if args.command == "memory":
+        if args.action == "rebuild":
+            _print_json(app.rebuild_memory(limit=args.limit))
+        elif args.action == "query":
+            _print_json(
+                app.query_memory(
+                    text=args.text,
+                    ts_code=args.ts_code,
+                    strategy_line=args.strategy_line,
+                    market_stage=args.market_stage,
+                    tags=args.tags,
+                    trade_date=args.trade_date,
+                    limit=args.limit,
+                )
+            )
+        else:
+            _print_json(app.skillize_memory(trade_date=args.trade_date, lookback_days=args.lookback_days, min_samples=args.min_samples))
+        return 0
+
     if args.command == "schedule":
         _print_json(app.run_schedule(now=args.now, force=args.force, dry_run=args.dry_run))
         return 0
 
     if args.command == "session":
         if args.action == "turn":
-            _print_json(
-                app.handle_session_turn(
-                    args.session_key,
-                    args.text,
-                    mode=args.mode,
-                    trade_date=args.trade_date,
-                    lookback_days=args.lookback_days,
-                )
-            )
+            _print_json(app.handle_session_turn(args.session_key, args.text, mode=args.mode, trade_date=args.trade_date, lookback_days=args.lookback_days))
         elif args.action == "state":
             _print_json(app.get_session_state(args.session_key))
         else:

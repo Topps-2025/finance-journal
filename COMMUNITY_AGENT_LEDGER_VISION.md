@@ -1,37 +1,52 @@
 # Community Agent Ledger Vision
 
-The long-term vision behind Finance Journal is larger than one local trading notebook.
+The long-term community direction behind Finance Journal is no longer just ?many notebooks?.
+It is a network of privacy-aware trade memories plus reusable skill cards.
 
 ## Core Idea
 
-A single-user journal is useful. A network of structured, privacy-aware journals can become a much stronger knowledge layer.
+A single journal is useful.
+A community of structured memory graphs is more useful when it preserves:
+- what the trader saw
+- what the trader believed
+- what was ignored
+- what later proved useful or dangerous
 
-The future community direction may include:
+## Community Assets
 
-- anonymized pattern cards extracted from many users' reviews
-- shared "what worked / what failed" conditions without exposing private account data
-- agent-readable principles derived from many small journal fragments
-- provenance and moderation layers for shared community knowledge
+The future community layer should support two asset types:
+
+1. `memory cards`
+   - anonymized trade-memory fragments
+   - repeatable error archetypes
+   - discipline / emotion lessons
+   - regime-aware tradeoff notes
+
+2. `skill cards`
+   - solidified, evidence-backed reusable trading skills
+   - not necessarily standardized quant strategies
+   - may include semi-structured setup logic, review checklists, and failure boundaries
+   - must keep provenance, sample size, and do-not-use conditions
 
 ## Important Boundary
 
-This is not a plan to create a copy-trading system or a hype-driven stock-picking feed.
+This is not a copy-trading network.
+It is not a hype feed.
+It is not a place to publish raw buy/sell calls.
 
-The useful community layer should focus on:
-
+The community layer should share:
 - reflection patterns
-- discipline lessons
-- error archetypes
+- reusable memory structures
+- stable review skills
 - context-dependent tradeoff awareness
 
-## Why It Matters
+## Why This Fits The Framework
 
-Most trading knowledge is either too vague to reuse or too overfit to trust.
-A structured ledger approach can preserve more nuance:
+Finance Journal now treats high-value trajectories as something that can be:
+- remembered
+- retrieved
+- reviewed
+- distilled into skill cards
+- optionally shared with community provenance
 
-- what the trader saw
-- what they believed
-- what they ignored
-- what the outcome later taught them
-
-That kind of record is more valuable than another simplified "signal" stream.
+That makes the community layer about connected memory and connected skills, not about broadcasting signals.

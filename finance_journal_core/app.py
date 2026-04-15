@@ -36,16 +36,30 @@ from .market_data import (
     shift_calendar_date,
     to_date,
 )
+from .memory import (
+    build_memory_provenance,
+    build_memory_quality,
+    build_memory_summary,
+    build_memory_text,
+    build_memory_title,
+    extract_tags,
+    hyperedge_specs_for_row,
+    scene_keys_for_row,
+    score_memory_row,
+    strategy_line_from_context,
+    summarize_scene,
+)
 from .storage import FinanceJournalDB, ensure_runtime_dirs, json_dumps, json_loads, make_id, now_ts, safe_filename
-from .url_sources import UrlEventFetcher
 from .vault import (
     ensure_vault_dirs,
     file_stem,
     render_daily_note,
     render_dashboard_note,
     render_health_report_note,
+    render_memory_note,
     render_plan_note,
     render_review_note,
+    render_skill_note,
     render_trade_note,
 )
 
@@ -85,7 +99,6 @@ class FinanceJournalApp:
         ensure_runtime_dirs(self.config)
         self.db = FinanceJournalDB(self.config["db_path"])
         self.db.init_schema()
-        self.url_fetcher = UrlEventFetcher(config=self.config.get("url_sources", {}))
         self.market = None
         if enable_market_data and self.config.get("tushare", {}).get("enabled", True):
             self.market = TushareMarketData(token=token)
@@ -146,10 +159,20 @@ class FinanceJournalApp:
             (int(limit),),
         )
 
+    def _recent_skill_cards(self, limit: int = 12) -> list[dict[str, Any]]:
+        return self.db.fetchall(
+            "SELECT * FROM memory_skill_cards ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+            (int(limit),),
+        )
+
     def export_dashboard_note(self) -> dict[str, Any]:
         if not self._vault_enabled():
             return {"enabled": False}
-        markdown = render_dashboard_note(self.list_trades(limit=20), self._recent_health_reports(limit=12))
+        markdown = render_dashboard_note(
+            self.list_trades(limit=20),
+            self._recent_health_reports(limit=12),
+            self._recent_skill_cards(limit=12),
+        )
         path = self._vault_write("dashboard", "trade_journal_dashboard", markdown)
         return {"path": path}
 
@@ -201,6 +224,24 @@ class FinanceJournalApp:
         path = self._vault_write("reports", stem, markdown)
         return {"path": path, "report_id": report_id}
 
+    def export_memory_note(self, memory_id: str) -> dict[str, Any]:
+        row = self.db.fetchone("SELECT * FROM memory_cells WHERE memory_id = ?", (memory_id,))
+        if not row:
+            raise ValueError(f"memory cell not found: {memory_id}")
+        markdown = render_memory_note(row)
+        stem = file_stem("memory", row.get("trade_date") or "", row.get("ts_code") or "", memory_id)
+        path = self._vault_write("memory", stem, markdown)
+        return {"path": path, "memory_id": memory_id}
+
+    def export_skill_note(self, skill_id: str) -> dict[str, Any]:
+        row = self.db.fetchone("SELECT * FROM memory_skill_cards WHERE skill_id = ?", (skill_id,))
+        if not row:
+            raise ValueError(f"skill card not found: {skill_id}")
+        markdown = render_skill_note(row)
+        stem = file_stem("skill", row.get("title") or "", skill_id)
+        path = self._vault_write("skills", stem, markdown)
+        return {"path": path, "skill_id": skill_id}
+
     def export_daily_note(self, trade_date: str) -> dict[str, Any]:
         token = normalize_trade_date(trade_date)
         plans = self.db.fetchall(
@@ -215,8 +256,15 @@ class FinanceJournalApp:
             "SELECT * FROM reviews WHERE review_due_date = ? OR sell_date = ? ORDER BY updated_at DESC",
             (token, token),
         )
-        events = self.list_info_events(trade_date=token, limit=20)
-        markdown = render_daily_note(token, plans, trades, reviews, events)
+        memory_result = self.query_memory(trade_date=token, limit=8)
+        markdown = render_daily_note(
+            token,
+            plans,
+            trades,
+            reviews,
+            memory_result.get("matched_cells", []),
+            memory_result.get("linked_skill_cards", []),
+        )
         stem = file_stem("daily", token, "review")
         path = self._vault_write("daily", stem, markdown)
         return {"path": path, "trade_date": token}
@@ -234,6 +282,10 @@ class FinanceJournalApp:
             paths.append(self.export_review_note(review["review_id"])["path"])
         for report in self._recent_health_reports(limit=limit):
             paths.append(self.export_report_note(report["report_id"])["path"])
+        for memory in self.db.fetchall("SELECT memory_id FROM memory_cells ORDER BY updated_at DESC LIMIT ?", (int(limit),)):
+            paths.append(self.export_memory_note(memory["memory_id"])["path"])
+        for skill in self._recent_skill_cards(limit=limit):
+            paths.append(self.export_skill_note(skill["skill_id"])["path"])
         if trade_date:
             paths.append(self.export_daily_note(trade_date)["path"])
         paths.append(self.export_dashboard_note()["path"])
@@ -260,13 +312,6 @@ class FinanceJournalApp:
 
     def _symbol_index(self) -> dict[str, str]:
         index: dict[str, str] = {}
-        for row in self.list_watchlist(active_only=False):
-            code = row.get("ts_code") or ""
-            name = row.get("name") or ""
-            if code:
-                index[code] = name or code
-            if name and code:
-                index[name] = code
         for row in self.db.fetchall("SELECT ts_code, name FROM plans ORDER BY updated_at DESC LIMIT 500"):
             code = row.get("ts_code") or ""
             name = row.get("name") or ""
@@ -1631,13 +1676,13 @@ class FinanceJournalApp:
                     last_result=draft,
                     memory=next_memory,
                 )
-            return {
+            return self._attach_memory_context({
                 "session_key": token,
                 "route": route,
                 "assistant_message": assistant_message,
                 "draft": draft,
                 "session_state": self._build_session_state_payload(token),
-            }
+            }, fields=draft.get("fields") or {}, entity_kind=draft.get("applied_entity_kind") or "", entity_id=draft.get("applied_entity_id") or "")
 
         active_entity_kind = str(current.get("active_entity_kind") or "")
         active_entity_id = str(current.get("active_entity_id") or "")
@@ -1678,13 +1723,13 @@ class FinanceJournalApp:
                 last_result=enriched,
                 memory=next_memory,
             )
-            return {
+            return self._attach_memory_context({
                 "session_key": token,
                 "route": "entity_enriched",
                 "assistant_message": assistant_message,
                 "result": enriched,
                 "session_state": self._build_session_state_payload(token),
-            }
+            }, fields=memory_fields, entity_kind=entity_kind or active_entity_kind, entity_id=entity_id or active_entity_id)
 
         parsed = self.parse_journal_text(user_text, mode=mode, trade_date=resolved_trade_date)
         parsed_fields, reuse_items = self._apply_session_memory_to_fields(
@@ -1738,13 +1783,13 @@ class FinanceJournalApp:
                 last_result=result,
                 memory=next_memory,
             )
-            return {
+            return self._attach_memory_context({
                 "session_key": token,
                 "route": "applied_from_session",
                 "assistant_message": assistant_message,
                 "result": result,
                 "session_state": self._build_session_state_payload(token),
-            }
+            }, fields=parsed.get("fields") or {}, entity_kind=entity_kind, entity_id=entity_id)
 
         draft = self.start_journal_draft(
             user_text,
@@ -1774,81 +1819,474 @@ class FinanceJournalApp:
             last_result=draft,
             memory=next_memory,
         )
-        return {
+        return self._attach_memory_context({
             "session_key": token,
             "route": "draft_started",
             "assistant_message": assistant_message,
             "draft": draft,
             "session_state": self._build_session_state_payload(token),
+        }, fields=draft.get("fields") or {})
+
+    def _memory_cell_id(self, entity_kind: str, entity_id: str) -> str:
+        return f"memory_{entity_kind}_{safe_filename(entity_id)}"
+
+    def _write_memory_snapshot(self, memory_row: dict[str, Any]) -> None:
+        memory_dir = Path(self.config["memory_dir"])
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        stem = safe_filename(f"{memory_row.get('trade_date') or 'undated'}_{memory_row.get('memory_id') or ''}")
+        payload_path = memory_dir / f"{stem}.json"
+        markdown_path = memory_dir / f"{stem}.md"
+        payload_path.write_text(json.dumps(memory_row, ensure_ascii=False, indent=2), encoding="utf-8")
+        markdown_path.write_text(render_memory_note(memory_row), encoding="utf-8")
+
+    def _scene_id(self, scene_key: str) -> str:
+        return "scene_" + safe_filename(scene_key, max_len=80)
+
+    def _edge_id(self, edge_key: str) -> str:
+        return "edge_" + safe_filename(edge_key, max_len=80)
+
+    def _skill_id(self, source_kind: str, source_id: str) -> str:
+        return f"skill_{safe_filename(source_kind)}_{safe_filename(source_id)}"
+
+    def _upsert_memory_cell(self, entity_kind: str, row: dict[str, Any]) -> dict[str, Any]:
+        entity_id = str(row.get("plan_id") or row.get("trade_id") or row.get("review_id") or "").strip()
+        if not entity_id:
+            raise ValueError(f"cannot build memory cell without entity id: {entity_kind}")
+        memory_id = self._memory_cell_id(entity_kind, entity_id)
+        decision_context = json_loads(row.get("decision_context_json"), {}) or {}
+        strategy_line = strategy_line_from_context(decision_context)
+        trade_date = normalize_trade_date(
+            row.get("buy_date")
+            or row.get("valid_from")
+            or row.get("review_due_date")
+            or row.get("sell_date")
+            or self._today()
+        )
+        payload = {
+            "memory_id": memory_id,
+            "memory_kind": entity_kind,
+            "source_entity_kind": entity_kind,
+            "source_entity_id": entity_id,
+            "trade_date": trade_date,
+            "ts_code": str(row.get("ts_code") or "").strip(),
+            "strategy_line": strategy_line,
+            "market_stage": str(row.get("market_stage_tag") or "").strip(),
+            "title": build_memory_title(entity_kind, row),
+            "text_body": build_memory_text(entity_kind, row),
+            "summary_json": build_memory_summary(entity_kind, row),
+            "tags_json": extract_tags(entity_kind, row),
+            "quality_json": build_memory_quality(entity_kind, row),
+            "provenance_json": build_memory_provenance(entity_kind, row),
+            "created_at": row.get("created_at") or now_ts(),
+            "updated_at": now_ts(),
+        }
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_cells(
+                    memory_id, memory_kind, source_entity_kind, source_entity_id, trade_date, ts_code, strategy_line,
+                    market_stage, title, text_body, summary_json, tags_json, quality_json, provenance_json, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["memory_id"],
+                    payload["memory_kind"],
+                    payload["source_entity_kind"],
+                    payload["source_entity_id"],
+                    payload["trade_date"],
+                    payload["ts_code"],
+                    payload["strategy_line"],
+                    payload["market_stage"],
+                    payload["title"],
+                    payload["text_body"],
+                    json_dumps(payload["summary_json"]),
+                    json_dumps(payload["tags_json"]),
+                    json_dumps(payload["quality_json"]),
+                    json_dumps(payload["provenance_json"]),
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.execute("DELETE FROM memory_cells_fts WHERE memory_id = ?", (payload["memory_id"],))
+            conn.execute(
+                """
+                INSERT INTO memory_cells_fts(memory_id, title, text_body, tag_text, strategy_line, market_stage)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["memory_id"],
+                    payload["title"],
+                    payload["text_body"],
+                    " ".join(payload["tags_json"]),
+                    payload["strategy_line"],
+                    payload["market_stage"],
+                ),
+            )
+        stored = self.db.fetchone("SELECT * FROM memory_cells WHERE memory_id = ?", (memory_id,)) or {}
+        self._write_memory_snapshot(stored)
+        return stored
+
+    def _rebuild_scene(self, scene_key: str, scene_type: str, title: str) -> dict[str, Any]:
+        if scene_type == "symbol":
+            rows = self.db.fetchall("SELECT * FROM memory_cells WHERE ts_code = ? ORDER BY updated_at DESC LIMIT 200", (scene_key.split(':', 1)[1],))
+        elif scene_type == "strategy":
+            rows = self.db.fetchall("SELECT * FROM memory_cells WHERE strategy_line = ? ORDER BY updated_at DESC LIMIT 200", (scene_key.split(':', 1)[1],))
+        elif scene_type == "stage":
+            rows = self.db.fetchall("SELECT * FROM memory_cells WHERE market_stage = ? ORDER BY updated_at DESC LIMIT 200", (scene_key.split(':', 1)[1],))
+        else:
+            token = scene_key.split(":", 1)[1]
+            rows = self.db.fetchall("SELECT * FROM memory_cells ORDER BY updated_at DESC LIMIT 200")
+            rows = [row for row in rows if token and token in " ".join(split_tags(json_loads(row.get("tags_json"), [])))]
+        scene_payload = summarize_scene(rows, scene_key=scene_key, scene_type=scene_type, title=title)
+        scene_payload["scene_id"] = self._scene_id(scene_key)
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_scenes(
+                    scene_id, scene_key, scene_type, title, description, trade_date, ts_code, strategy_line,
+                    market_stage, tags_json, memory_ids_json, stats_json, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scene_payload["scene_id"],
+                    scene_payload["scene_key"],
+                    scene_payload["scene_type"],
+                    scene_payload["title"],
+                    scene_payload["description"],
+                    scene_payload["trade_date"],
+                    scene_payload["ts_code"],
+                    scene_payload["strategy_line"],
+                    scene_payload["market_stage"],
+                    json_dumps([item[0] for item in scene_payload["tags_json"]]),
+                    json_dumps(scene_payload["memory_ids_json"]),
+                    json_dumps(scene_payload["stats_json"]),
+                    now_ts(),
+                    now_ts(),
+                ),
+            )
+        return self.db.fetchone("SELECT * FROM memory_scenes WHERE scene_id = ?", (scene_payload["scene_id"],)) or {}
+
+    def _refresh_memory_links(self, entity_kind: str, row: dict[str, Any], memory_row: dict[str, Any]) -> None:
+        memory_id = str(memory_row.get("memory_id") or "")
+        if not memory_id:
+            return
+        specs = hyperedge_specs_for_row(entity_kind, row)
+        with self.db.connect() as conn:
+            conn.execute("DELETE FROM memory_hyperedge_members WHERE member_kind = 'memory' AND member_id = ?", (memory_id,))
+            for spec in specs:
+                edge_id = self._edge_id(spec["edge_key"])
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_hyperedges(
+                        edge_id, edge_key, edge_type, label, tags_json, metadata_json, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        edge_id,
+                        spec["edge_key"],
+                        spec["edge_type"],
+                        spec["label"],
+                        json_dumps([spec["edge_type"], spec["label"]]),
+                        json_dumps({"source_entity_kind": entity_kind}),
+                        now_ts(),
+                        now_ts(),
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO memory_hyperedge_members(membership_id, edge_id, member_kind, member_id, member_role, created_at)
+                    VALUES(?, ?, 'memory', ?, ?, ?)
+                    """,
+                    (make_id("membership"), edge_id, memory_id, entity_kind, now_ts()),
+                )
+        for scene_key, scene_type, title in scene_keys_for_row(entity_kind, row):
+            scene = self._rebuild_scene(scene_key, scene_type, title)
+            if not scene:
+                continue
+            edge_id = self._edge_id(scene_key)
+            with self.db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_hyperedges(
+                        edge_id, edge_key, edge_type, label, tags_json, metadata_json, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        edge_id,
+                        scene_key,
+                        scene_type,
+                        title,
+                        json_dumps(split_tags(json_loads(scene.get("tags_json"), []))),
+                        json_dumps({"scene_id": scene.get("scene_id")}),
+                        now_ts(),
+                        now_ts(),
+                    ),
+                )
+                conn.execute("DELETE FROM memory_hyperedge_members WHERE edge_id = ? AND member_kind = 'scene'", (edge_id,))
+                conn.execute(
+                    """
+                    INSERT INTO memory_hyperedge_members(membership_id, edge_id, member_kind, member_id, member_role, created_at)
+                    VALUES(?, ?, 'scene', ?, 'scene', ?)
+                    """,
+                    (make_id("membership"), edge_id, scene.get("scene_id") or "", now_ts()),
+                )
+
+    def _sync_memory_for_entity(self, entity_kind: str, entity_id: str) -> dict[str, Any]:
+        if entity_kind == "plan":
+            row = self.get_plan(entity_id)
+        elif entity_kind == "trade":
+            row = self.get_trade(entity_id)
+        elif entity_kind == "review":
+            row = self.db.fetchone("SELECT * FROM reviews WHERE review_id = ?", (entity_id,))
+        else:
+            row = None
+        if not row:
+            return {}
+        memory_row = self._upsert_memory_cell(entity_kind, row)
+        self._refresh_memory_links(entity_kind, row, memory_row)
+        return memory_row
+
+    def rebuild_memory(self, limit: int = 0) -> dict[str, Any]:
+        plan_rows = self.db.fetchall("SELECT plan_id FROM plans ORDER BY updated_at DESC")
+        trade_rows = self.db.fetchall("SELECT trade_id FROM trades ORDER BY updated_at DESC")
+        review_rows = self.db.fetchall("SELECT review_id FROM reviews ORDER BY updated_at DESC")
+        inserted: list[str] = []
+        for entity_kind, rows, field_name in (
+            ("plan", plan_rows, "plan_id"),
+            ("trade", trade_rows, "trade_id"),
+            ("review", review_rows, "review_id"),
+        ):
+            for row in rows[: int(limit) if limit and int(limit) > 0 else None]:
+                memory_row = self._sync_memory_for_entity(entity_kind, str(row.get(field_name) or ""))
+                if memory_row.get("memory_id"):
+                    inserted.append(memory_row["memory_id"])
+        return {
+            "rebuild_count": len(inserted),
+            "memory_ids": inserted[:20],
+            "scene_count": self.db.fetchone("SELECT COUNT(*) AS count FROM memory_scenes", ())["count"],
+            "skill_count": self.db.fetchone("SELECT COUNT(*) AS count FROM memory_skill_cards", ())["count"],
         }
 
-    def add_watchlist(self, ts_code: str, name: str | None = None, notes: str = "", source: str = "manual") -> dict[str, Any]:
-        code = normalize_ts_code(ts_code)
-        resolved_name = self._resolve_name(code, name)
-        timestamp = now_ts()
-        with self.db.connect() as conn:
-            conn.execute(
+    def query_memory(
+        self,
+        *,
+        text: str = "",
+        ts_code: str | None = None,
+        strategy_line: str | None = None,
+        market_stage: str | None = None,
+        tags: list[str] | str | None = None,
+        trade_date: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        token_code = normalize_ts_code(ts_code) if ts_code else ""
+        requested_tags = split_tags(tags)
+        candidate_limit = int(limit or self.config.get("memory", {}).get("default_query_limit", 8))
+        base_limit = max(candidate_limit * 3, int(self.config.get("memory", {}).get("max_query_candidates", 24)))
+        if text.strip():
+            query_terms = [part.replace('"', " ").strip() for part in split_tags(text) if part.strip()]
+            if not query_terms:
+                query_terms = [text.replace('"', " ").strip()]
+            query_text = " ".join(f'"{term}"' for term in query_terms if term)
+            rows = self.db.fetchall(
                 """
-                INSERT INTO watchlist(ts_code, name, notes, source, is_active, created_at, updated_at)
-                VALUES(?, ?, ?, ?, 1, ?, ?)
-                ON CONFLICT(ts_code) DO UPDATE SET
-                    name=excluded.name,
-                    notes=excluded.notes,
-                    source=excluded.source,
-                    is_active=1,
-                    updated_at=excluded.updated_at
+                SELECT c.*
+                FROM memory_cells_fts f
+                JOIN memory_cells c ON c.memory_id = f.memory_id
+                WHERE memory_cells_fts MATCH ?
+                ORDER BY c.updated_at DESC
+                LIMIT ?
                 """,
-                (code, resolved_name, notes, source, timestamp, timestamp),
+                (query_text, base_limit),
             )
-        return self.get_watchlist_item(code) or {}
+        else:
+            rows = self.db.fetchall("SELECT * FROM memory_cells ORDER BY updated_at DESC LIMIT ?", (base_limit,))
+        if trade_date:
+            token_date = normalize_trade_date(trade_date)
+            rows = [row for row in rows if str(row.get("trade_date") or "") == token_date]
+        scored_rows: list[dict[str, Any]] = []
+        for row in rows:
+            score = score_memory_row(
+                row,
+                text=text,
+                ts_code=token_code,
+                strategy_line=str(strategy_line or ""),
+                market_stage=str(market_stage or ""),
+                tags=requested_tags,
+            )
+            if score <= 0 and (text or token_code or strategy_line or market_stage or requested_tags):
+                continue
+            row_copy = dict(row)
+            row_copy["score"] = score
+            scored_rows.append(row_copy)
+        scored_rows.sort(key=lambda item: (item.get("score") or 0.0, item.get("updated_at") or ""), reverse=True)
+        matched_cells = scored_rows[:candidate_limit]
+        scene_candidates = self.db.fetchall("SELECT * FROM memory_scenes ORDER BY updated_at DESC LIMIT 100")
+        matched_scenes: list[dict[str, Any]] = []
+        for scene in scene_candidates:
+            scene_score = 0.0
+            scene_tags = set(split_tags(json_loads(scene.get("tags_json"), [])))
+            if token_code and scene.get("ts_code") == token_code:
+                scene_score += 3.0
+            if strategy_line and scene.get("strategy_line") == strategy_line:
+                scene_score += 2.0
+            if market_stage and scene.get("market_stage") == market_stage:
+                scene_score += 1.5
+            scene_score += float(len(scene_tags & set(requested_tags))) * 1.5
+            if scene_score > 0 or not (text or token_code or strategy_line or market_stage or requested_tags):
+                scene_copy = dict(scene)
+                scene_copy["score"] = round(scene_score, 4)
+                matched_scenes.append(scene_copy)
+        matched_scenes.sort(key=lambda item: (item.get("score") or 0.0, item.get("updated_at") or ""), reverse=True)
+        skill_rows = self.db.fetchall("SELECT * FROM memory_skill_cards ORDER BY updated_at DESC LIMIT 100")
+        linked_skill_cards: list[dict[str, Any]] = []
+        for skill in skill_rows:
+            skill_tags = set(split_tags(json_loads(skill.get("trigger_conditions_json"), [])))
+            score = float(len(skill_tags & set(requested_tags))) * 2.0
+            if token_code and any(tag == f"symbol:{token_code}" for tag in skill_tags):
+                score += 3.0
+            if score > 0:
+                skill_copy = dict(skill)
+                skill_copy["score"] = round(score, 4)
+                linked_skill_cards.append(skill_copy)
+        linked_skill_cards.sort(key=lambda item: (item.get("score") or 0.0, item.get("sample_size") or 0), reverse=True)
+        checklist: list[str] = []
+        for item in linked_skill_cards[:3]:
+            checklist.append(f"Skill card check: {item.get('title') or item.get('skill_id')}")
+        for item in matched_cells[:2]:
+            checklist.append(f"Memory check: revisit {item.get('title') or item.get('memory_id')}")
+        return {
+            "query": {
+                "text": text,
+                "ts_code": token_code,
+                "strategy_line": str(strategy_line or ""),
+                "market_stage": str(market_stage or ""),
+                "tags": requested_tags,
+                "trade_date": normalize_trade_date(trade_date) if trade_date else "",
+            },
+            "matched_cells": matched_cells,
+            "matched_scenes": matched_scenes[:candidate_limit],
+            "linked_skill_cards": linked_skill_cards[:candidate_limit],
+            "memory_checklist": checklist[:5],
+        }
 
-    def get_watchlist_item(self, ts_code: str) -> dict[str, Any] | None:
-        return self.db.fetchone("SELECT * FROM watchlist WHERE ts_code = ?", (normalize_ts_code(ts_code),))
-
-    def list_watchlist(self, active_only: bool = True) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM watchlist"
-        if active_only:
-            sql += " WHERE is_active = 1"
-        sql += " ORDER BY updated_at DESC, ts_code ASC"
-        return self.db.fetchall(sql)
-
-    def remove_watchlist(self, ts_code: str) -> None:
-        self.db.execute(
-            "UPDATE watchlist SET is_active = 0, updated_at = ? WHERE ts_code = ?",
-            (now_ts(), normalize_ts_code(ts_code)),
-        )
-
-    def add_keyword(self, keyword: str, category: str = "industry") -> dict[str, Any]:
-        token = str(keyword or "").strip()
-        if not token:
-            raise ValueError("keyword is required")
-        timestamp = now_ts()
+    def skillize_memory(self, lookback_days: int = 365, trade_date: str | None = None, min_samples: int | None = None) -> dict[str, Any]:
+        end_date = normalize_trade_date(trade_date or self._today())
+        start_date = shift_calendar_date(end_date, -int(lookback_days))
+        threshold = int(min_samples or self.config.get("memory", {}).get("skillize_min_samples", 2))
+        report = self.generate_evolution_report(lookback_days=lookback_days, trade_date=end_date, min_samples=threshold, write_artifact=False)
+        created: list[dict[str, Any]] = []
+        share_threshold = int(self.config.get("memory", {}).get("community_share_min_samples", 3))
         with self.db.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO keywords(keyword, category, enabled, created_at, updated_at)
-                VALUES(?, ?, 1, ?, ?)
-                ON CONFLICT(keyword) DO UPDATE SET
-                    category=excluded.category,
-                    enabled=1,
-                    updated_at=excluded.updated_at
-                """,
-                (token, category, timestamp, timestamp),
-            )
-        return self.db.fetchone("SELECT * FROM keywords WHERE keyword = ?", (token,)) or {}
+            for item in report.get("quality_paths", [])[:8]:
+                source_id = str(item.get("path_key") or "")
+                if not source_id:
+                    continue
+                skill_id = self._skill_id("quality_path", source_id)
+                trigger_conditions = item.get("components") or []
+                do_not_use_when = [
+                    "when the setup only matches by name but not by market stage",
+                    "when current risk controls are missing",
+                ]
+                summary_markdown = "\n".join(
+                    [
+                        f"- Path: {item.get('path_key') or '-'}",
+                        f"- Sample size: {item.get('sample_size') or 0}",
+                        f"- Win rate: {item.get('win_rate_pct') or '-'}%",
+                        f"- Avg return: {item.get('avg_actual_return_pct') or '-'}%",
+                    ]
+                )
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_skill_cards(
+                        skill_id, source_kind, source_id, title, intent, trigger_conditions_json, do_not_use_when_json,
+                        evidence_trade_ids_json, sample_size, bandit_snapshot_json, summary_markdown, community_shareable,
+                        created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        skill_id,
+                        "quality_path",
+                        source_id,
+                        f"Reusable Trade Skill | {source_id}",
+                        "Reuse a historically strong trade memory path as a pre-trade review checklist.",
+                        json_dumps(trigger_conditions),
+                        json_dumps(do_not_use_when),
+                        json_dumps([example.get("trade_id") for example in item.get("examples", []) if example.get("trade_id")]),
+                        int(item.get("sample_size") or 0),
+                        json_dumps(
+                            {
+                                "ucb_score": item.get("ucb_score"),
+                                "posterior_mean": item.get("posterior_mean"),
+                                "conservative_score": item.get("conservative_score"),
+                            }
+                        ),
+                        summary_markdown,
+                        1 if int(item.get("sample_size") or 0) >= share_threshold else 0,
+                        now_ts(),
+                        now_ts(),
+                    ),
+                )
+                created.append(
+                    {
+                        "skill_id": skill_id,
+                        "source_kind": "quality_path",
+                        "source_id": source_id,
+                        "title": f"Reusable Trade Skill | {source_id}",
+                        "intent": "Reuse a historically strong trade memory path as a pre-trade review checklist.",
+                        "trigger_conditions_json": json_dumps(trigger_conditions),
+                        "do_not_use_when_json": json_dumps(do_not_use_when),
+                        "evidence_trade_ids_json": json_dumps([example.get("trade_id") for example in item.get("examples", []) if example.get("trade_id")]),
+                        "sample_size": int(item.get("sample_size") or 0),
+                        "bandit_snapshot_json": json_dumps(
+                            {
+                                "ucb_score": item.get("ucb_score"),
+                                "posterior_mean": item.get("posterior_mean"),
+                                "conservative_score": item.get("conservative_score"),
+                            }
+                        ),
+                        "summary_markdown": summary_markdown,
+                        "community_shareable": 1 if int(item.get("sample_size") or 0) >= share_threshold else 0,
+                    }
+                )
+        if self._vault_enabled():
+            for row in created:
+                if row.get("skill_id"):
+                    self.export_skill_note(row["skill_id"])
+        return {
+            "period_start": start_date,
+            "period_end": end_date,
+            "created_skills": created,
+        }
 
-    def list_keywords(self, enabled_only: bool = True) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM keywords"
-        if enabled_only:
-            sql += " WHERE enabled = 1"
-        sql += " ORDER BY updated_at DESC, keyword ASC"
-        return self.db.fetchall(sql)
-
-    def remove_keyword(self, keyword: str) -> None:
-        self.db.execute(
-            "UPDATE keywords SET enabled = 0, updated_at = ? WHERE keyword = ?",
-            (now_ts(), str(keyword or "").strip()),
-        )
+    def _attach_memory_context(self, payload: dict[str, Any], *, fields: dict[str, Any] | None = None, entity_kind: str = "", entity_id: str = "") -> dict[str, Any]:
+        merged = dict(payload)
+        ts_code = str((fields or {}).get("ts_code") or "").strip()
+        market_stage = str((fields or {}).get("market_stage") or (fields or {}).get("market_stage_tag") or "").strip()
+        tag_values: list[str] = []
+        if fields:
+            for key in ("logic_tags", "pattern_tags", "environment_tags", "mistake_tags"):
+                tag_values.extend(split_tags((fields or {}).get(key, [])))
+        if not ts_code and entity_kind == "trade" and entity_id:
+            trade = self.get_trade(entity_id) or {}
+            ts_code = str(trade.get("ts_code") or "")
+            market_stage = str(trade.get("market_stage_tag") or market_stage or "")
+            tag_values.extend(split_tags(json_loads(trade.get("logic_type_tags_json"), [])))
+            tag_values.extend(split_tags(json_loads(trade.get("pattern_tags_json"), [])))
+            tag_values.extend(split_tags(json_loads(trade.get("environment_tags_json"), [])))
+        if not ts_code and entity_kind == "plan" and entity_id:
+            plan = self.get_plan(entity_id) or {}
+            ts_code = str(plan.get("ts_code") or "")
+            market_stage = str(plan.get("market_stage_tag") or market_stage or "")
+            tag_values.extend(split_tags(json_loads(plan.get("logic_tags_json"), [])))
+            tag_values.extend(split_tags(json_loads(plan.get("environment_tags_json"), [])))
+        memory_result = self.query_memory(ts_code=ts_code or None, market_stage=market_stage or None, tags=tag_values, limit=5)
+        merged["memory_retrieval"] = {
+            "matched_cells": memory_result.get("matched_cells", []),
+            "matched_scenes": memory_result.get("matched_scenes", []),
+            "linked_skill_cards": memory_result.get("linked_skill_cards", []),
+        }
+        merged["memory_checklist"] = memory_result.get("memory_checklist", [])
+        return merged
 
     def create_plan(
         self,
@@ -1913,6 +2351,7 @@ class FinanceJournalApp:
                 ),
             )
         plan = self.get_plan(plan_id) or {}
+        plan["memory_cell"] = self._sync_memory_for_entity("plan", plan_id)
         result = {"plan": plan}
         if with_reference:
             result["reference"] = self.generate_reference(
@@ -1959,7 +2398,9 @@ class FinanceJournalApp:
             "UPDATE plans SET status = ?, linked_trade_id = ?, abandon_reason = ?, updated_at = ? WHERE plan_id = ?",
             (status, linked_trade_id, reason or plan.get("abandon_reason") or "", now_ts(), plan_id),
         )
-        return self.get_plan(plan_id) or {}
+        updated_plan = self.get_plan(plan_id) or {}
+        updated_plan["memory_cell"] = self._sync_memory_for_entity("plan", plan_id)
+        return updated_plan
 
     def enrich_plan_from_text(
         self,
@@ -2006,9 +2447,11 @@ class FinanceJournalApp:
             ),
         )
         updated_plan = self.get_plan(plan_id) or {}
+        memory_cell = self._sync_memory_for_entity("plan", plan_id)
         reflection_prompts = build_reflection_prompts(merged_fields, "plan", [])
         response = {
             "plan": updated_plan,
+            "memory_cell": memory_cell,
             "parsed": parsed,
             "updated_fields": self._changed_field_names(
                 before_fields,
@@ -2050,575 +2493,6 @@ class FinanceJournalApp:
         if self._vault_enabled() and self.config.get("vault", {}).get("auto_export_after_plan", True):
             response["vault_note"] = self.export_plan_note(plan_id)
         return response
-
-    def _event_id(self, event_type: str, ts_code: str, headline: str, published_at: str, source: str, url: str = "") -> str:
-        seed = "|".join([event_type, ts_code or "", headline or "", published_at or "", source or "", url or ""])
-        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
-        return f"event_{digest}"
-
-    def add_info_event(
-        self,
-        event_type: str,
-        headline: str,
-        summary: str = "",
-        ts_code: str | None = None,
-        name: str | None = None,
-        priority: str = "normal",
-        source: str = "manual",
-        published_at: str | None = None,
-        trade_date: str | None = None,
-        tags: list[str] | str | None = None,
-        url: str = "",
-        raw_payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        code = normalize_ts_code(ts_code) if ts_code else ""
-        resolved_name = name or (self._resolve_name(code, None) if code else "")
-        published = normalize_datetime_text(published_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        token = normalize_trade_date(trade_date or published[:10])
-        event_url = str(url or "").strip()
-        event_id = self._event_id(event_type, code, headline, published, source, event_url)
-        created_at = now_ts()
-        with self.db.connect() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO info_events(
-                    event_id, ts_code, name, event_type, priority, headline, summary, source,
-                    url, published_at, trade_date, tags_json, raw_payload_json, pushed_at, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_id,
-                    code,
-                    resolved_name,
-                    event_type,
-                    priority,
-                    headline,
-                    summary,
-                    source,
-                    event_url,
-                    published,
-                    token,
-                    json_dumps(split_tags(tags)),
-                    json_dumps(raw_payload or {}),
-                    "",
-                    created_at,
-                ),
-            )
-        return self.db.fetchone("SELECT * FROM info_events WHERE event_id = ?", (event_id,)) or {}
-
-    def list_info_events(self, trade_date: str | None = None, priority: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM info_events WHERE 1 = 1"
-        params: list[Any] = []
-        if trade_date:
-            sql += " AND trade_date = ?"
-            params.append(normalize_trade_date(trade_date))
-        if priority:
-            sql += " AND priority = ?"
-            params.append(priority)
-        sql += " ORDER BY published_at DESC, created_at DESC"
-        if limit > 0:
-            sql += f" LIMIT {int(limit)}"
-        return self.db.fetchall(sql, tuple(params))
-
-    def _normalize_feed_rows(
-        self,
-        rows: list[dict[str, Any]],
-        event_type: str,
-        fallback_trade_date: str,
-        default_ts_code: str = "",
-        default_name: str = "",
-        keyword_tag: str = "",
-    ) -> list[dict[str, Any]]:
-        normalized: list[dict[str, Any]] = []
-        high_priority_words = ["业绩", "预告", "合同", "停牌", "复牌", "减持", "增持", "监管", "问询", "CPI", "PPI", "降准", "美联储"]
-        for row in rows:
-            headline = str(row.get("title") or row.get("ann_title") or row.get("headline") or row.get("name") or "").strip()
-            if not headline:
-                continue
-            summary = str(row.get("summary") or row.get("content") or row.get("desc") or row.get("abstract") or "").strip()
-            published = normalize_datetime_text(
-                row.get("ann_date") or row.get("pub_time") or row.get("datetime") or row.get("date") or fallback_trade_date
-            )
-            code = normalize_ts_code(row.get("ts_code") or row.get("symbol") or default_ts_code or "") if (row.get("ts_code") or row.get("symbol") or default_ts_code) else ""
-            name = str(row.get("name") or row.get("ts_name") or default_name or "").strip()
-            source = str(row.get("src") or row.get("source") or event_type).strip()
-            priority = "high" if any(word in f"{headline} {summary}" for word in high_priority_words) else "normal"
-            tags = [event_type]
-            if keyword_tag:
-                tags.append(keyword_tag)
-            url = str(row.get("url") or row.get("link") or row.get("article_url") or "").strip()
-            normalized.append(
-                {
-                    "event_type": event_type,
-                    "headline": headline,
-                    "summary": summary,
-                    "ts_code": code,
-                    "name": name,
-                    "source": source,
-                    "priority": priority,
-                    "published_at": published,
-                    "trade_date": normalize_trade_date(published[:10] if published else fallback_trade_date),
-                    "tags": tags,
-                    "url": url,
-                    "raw_payload": row,
-                }
-            )
-        return normalized
-
-    def _configured_url_adapters(self) -> list[dict[str, Any]]:
-        cfg = self.config.get("url_sources", {}) or {}
-        if not cfg.get("enabled", False):
-            return []
-        adapters = cfg.get("adapters") or []
-        return [dict(item) for item in adapters if isinstance(item, dict)]
-
-    def _is_tushare_permission_error(self, exc: Exception) -> bool:
-        return "没有接口访问权限" in str(exc)
-
-    def _is_tushare_rate_limit_error(self, exc: Exception) -> bool:
-        return "每分钟最多访问该接口" in str(exc)
-
-    def fetch_url_events(
-        self,
-        url: str,
-        event_type: str = "news",
-        source: str = "url_fetch",
-        parser_mode: str = "auto",
-        ts_code: str | None = None,
-        name: str | None = None,
-        keyword: str | None = None,
-        trade_date: str | None = None,
-        priority: str = "normal",
-        limit: int = 20,
-        items_path: str = "",
-        headline_path: str = "",
-        summary_path: str = "",
-        published_path: str = "",
-        url_path: str = "",
-        include_patterns: list[str] | str | None = None,
-        exclude_patterns: list[str] | str | None = None,
-        follow_article: bool = False,
-        min_headline_length: int | None = None,
-        summary_lines: int | None = None,
-        ignore_tokens: list[str] | str | None = None,
-        drop_patterns: list[str] | str | None = None,
-        same_domain_only: bool = False,
-        script_markers: list[str] | str | None = None,
-    ) -> dict[str, Any]:
-        if not str(url or "").strip():
-            raise ValueError("url is required")
-        token = normalize_trade_date(trade_date or self._today())
-        adapter = {
-            "name": source or "url_fetch",
-            "event_type": event_type,
-            "source": source or "url_fetch",
-            "priority": priority,
-            "url_template": url,
-            "parser": {
-                "mode": parser_mode or "auto",
-                "limit": limit,
-                "items_path": items_path,
-                "headline_path": headline_path,
-                "summary_path": summary_path,
-                "published_path": published_path,
-                "url_path": url_path,
-                "include_patterns": split_tags(include_patterns),
-                "exclude_patterns": split_tags(exclude_patterns),
-                "follow_article": follow_article,
-                "min_headline_length": min_headline_length,
-                "summary_lines": summary_lines,
-                "ignore_tokens": split_tags(ignore_tokens),
-                "drop_patterns": split_tags(drop_patterns),
-                "same_domain_only": same_domain_only,
-                "script_markers": split_tags(script_markers),
-            },
-        }
-        context = {
-            "ts_code": normalize_ts_code(ts_code) if ts_code else "",
-            "name": name or "",
-            "keyword": keyword or "",
-            "start_date": token,
-            "end_date": token,
-            "trade_date": token,
-            "label": keyword or name or ts_code or url,
-        }
-        rows = self.url_fetcher.fetch_url_events(url, adapter, context=context)
-        inserted_rows: list[dict[str, Any]] = []
-        for row in rows:
-            inserted_rows.append(self.add_info_event(**row))
-        return {
-            "url": url,
-            "event_type": event_type,
-            "source": source,
-            "trade_date": token,
-            "inserted": len(inserted_rows),
-            "events": inserted_rows,
-        }
-
-    def fetch_watchlist_events(self, start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
-        watchlist = self.list_watchlist(active_only=True)
-        keywords = self.list_keywords(enabled_only=True)
-        start = normalize_trade_date(start_date or shift_calendar_date(self._today(), -int(self.config.get("monitoring", {}).get("announcement_lookback_days", 1))))
-        end = normalize_trade_date(end_date or self._today())
-        tushare_cfg = self.config.get("tushare", {})
-        results = {
-            "start_date": start,
-            "end_date": end,
-            "inserted": 0,
-            "errors": [],
-            "channels": {
-                "tushare": {"attempted": bool(self.market), "inserted": 0},
-                "url_adapters": {"attempted": 0, "inserted": 0, "adapter_results": []},
-            },
-        }
-
-        if self.market:
-            announcement_permission_denied = False
-            for item in watchlist:
-                if announcement_permission_denied:
-                    break
-                try:
-                    df = self.market.call_endpoint(
-                        tushare_cfg.get("announcement_endpoint", "anns_d"),
-                        ts_code=item["ts_code"],
-                        start_date=start,
-                        end_date=end,
-                    )
-                    rows = self._normalize_feed_rows(
-                        df.fillna("").to_dict(orient="records"),
-                        "announcement",
-                        end,
-                        default_ts_code=item["ts_code"],
-                        default_name=item.get("name") or "",
-                    )
-                    for row in rows:
-                        self.add_info_event(**row)
-                        results["inserted"] += 1
-                        results["channels"]["tushare"]["inserted"] += 1
-                except Exception as exc:
-                    if self._is_tushare_permission_error(exc):
-                        results["errors"].append(f"announcement:* -> {exc}")
-                        announcement_permission_denied = True
-                    else:
-                        results["errors"].append(f"announcement:{item['ts_code']} -> {exc}")
-
-            news_rate_limited = False
-            for item in keywords:
-                if news_rate_limited:
-                    break
-                try:
-                    df = self.market.call_endpoint(
-                        tushare_cfg.get("news_endpoint", "news"),
-                        start_date=start,
-                        end_date=end,
-                        keyword=item["keyword"],
-                    )
-                    rows = self._normalize_feed_rows(df.fillna("").to_dict(orient="records"), "keyword_news", end, keyword_tag=item["keyword"])
-                    for row in rows:
-                        self.add_info_event(**row)
-                        results["inserted"] += 1
-                        results["channels"]["tushare"]["inserted"] += 1
-                except Exception as exc:
-                    if self._is_tushare_rate_limit_error(exc):
-                        results["errors"].append(f"news:* -> {exc}")
-                        news_rate_limited = True
-                    else:
-                        results["errors"].append(f"news:{item['keyword']} -> {exc}")
-
-            try:
-                df = self.market.call_endpoint(tushare_cfg.get("macro_endpoint", "major_news"), start_date=start, end_date=end)
-                rows = self._normalize_feed_rows(df.fillna("").to_dict(orient="records"), "macro", end)
-                for row in rows:
-                    self.add_info_event(**row)
-                    results["inserted"] += 1
-                    results["channels"]["tushare"]["inserted"] += 1
-            except Exception as exc:
-                results["errors"].append(f"macro -> {exc}")
-
-        adapters = self._configured_url_adapters()
-        if adapters:
-            adapter_result = self.url_fetcher.fetch_configured_events(adapters, watchlist, keywords, start, end)
-            results["channels"]["url_adapters"]["attempted"] = adapter_result["attempted"]
-            results["channels"]["url_adapters"]["adapter_results"] = adapter_result["adapter_results"]
-            for row in adapter_result["events"]:
-                self.add_info_event(**row)
-                results["inserted"] += 1
-                results["channels"]["url_adapters"]["inserted"] += 1
-            results["errors"].extend(adapter_result["errors"])
-
-        if not self.market and not adapters:
-            results["errors"].append("no remote event source configured; enable Tushare or url_sources.adapters")
-        return results
-
-    def _watchlist_snapshot(self, trade_date: str) -> list[dict[str, Any]]:
-        items = self.list_watchlist(active_only=True)
-        snapshots: list[dict[str, Any]] = []
-        if not self.market or not self.config.get("notifications", {}).get("include_watchlist_snapshot", True):
-            return snapshots
-        reference_date = self._soft_trade_day(shift_calendar_date(trade_date, -1))
-        for item in items:
-            try:
-                bar = self.market.latest_bar(item["ts_code"], reference_date)
-            except Exception:
-                bar = None
-            snapshots.append(
-                {
-                    "ts_code": item["ts_code"],
-                    "name": item.get("name") or item["ts_code"],
-                    "reference_date": reference_date,
-                    "bar": bar,
-                }
-            )
-        return snapshots
-
-    def _priority_rank(self, value: str | None) -> int:
-        return 1 if str(value or "").strip().lower() == "high" else 0
-
-    def _normalize_event_identity(self, event: dict[str, Any]) -> str:
-        headline = str(event.get("headline") or "").strip().lower()
-        headline = re.sub(r"\s+", "", headline)
-        headline = re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", headline)
-        scope = str(event.get("ts_code") or event.get("name") or event.get("event_type") or "")
-        return f"{scope}|{headline[:96]}"
-
-    def _dedupe_info_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        buckets: dict[str, dict[str, Any]] = {}
-        for event in events:
-            key = self._normalize_event_identity(event)
-            source = str(event.get("source") or "unknown").strip() or "unknown"
-            current = buckets.get(key)
-            if current is None:
-                item = dict(event)
-                item["source_list"] = [source]
-                item["source_count"] = 1
-                item["duplicate_count"] = 1
-                item["merged_event_ids"] = [event.get("event_id")] if event.get("event_id") else []
-                buckets[key] = item
-                continue
-            if source not in current["source_list"]:
-                current["source_list"].append(source)
-            current["source_count"] = len(current["source_list"])
-            current["duplicate_count"] = int(current.get("duplicate_count") or 1) + 1
-            if event.get("event_id"):
-                current["merged_event_ids"].append(event.get("event_id"))
-            should_replace = (
-                self._priority_rank(event.get("priority")) > self._priority_rank(current.get("priority"))
-                or str(event.get("published_at") or "") > str(current.get("published_at") or "")
-            )
-            if should_replace:
-                preserved_sources = list(current["source_list"])
-                merged_ids = list(current["merged_event_ids"])
-                duplicate_count = current["duplicate_count"]
-                current.clear()
-                current.update(dict(event))
-                current["source_list"] = preserved_sources
-                current["source_count"] = len(preserved_sources)
-                current["duplicate_count"] = duplicate_count
-                current["merged_event_ids"] = merged_ids
-        deduped = list(buckets.values())
-        deduped.sort(
-            key=lambda item: (
-                self._priority_rank(item.get("priority")),
-                str(item.get("published_at") or ""),
-                str(item.get("created_at") or ""),
-            ),
-            reverse=True,
-        )
-        return deduped
-
-    def _group_events_by_source(self, events: list[dict[str, Any]], limit_per_source: int = 6) -> list[dict[str, Any]]:
-        groups: dict[str, list[dict[str, Any]]] = {}
-        for event in events:
-            source = str(event.get("source") or "unknown").strip() or "unknown"
-            groups.setdefault(source, []).append(event)
-        ordered = sorted(
-            groups.items(),
-            key=lambda item: (
-                max(self._priority_rank(event.get("priority")) for event in item[1]),
-                len(item[1]),
-                item[0],
-            ),
-            reverse=True,
-        )
-        result: list[dict[str, Any]] = []
-        for source, items in ordered:
-            items.sort(
-                key=lambda event: (
-                    self._priority_rank(event.get("priority")),
-                    str(event.get("published_at") or ""),
-                ),
-                reverse=True,
-            )
-            result.append(
-                {
-                    "source": source,
-                    "count": len(items),
-                    "high_priority_count": sum(1 for event in items if self._priority_rank(event.get("priority")) > 0),
-                    "events": items[:limit_per_source],
-                }
-            )
-        return result
-
-    def _format_event_brief_line(self, event: dict[str, Any], include_sources: bool = False) -> str:
-        prefix = f"{event.get('name') or event.get('ts_code')}: " if (event.get("name") or event.get("ts_code")) else ""
-        label = prefix + str(event.get("headline") or "")
-        if include_sources:
-            sources = event.get("source_list") or ([event.get("source")] if event.get("source") else [])
-            if sources:
-                label += f" [{'/'.join(str(item) for item in sources[:3])}]"
-        return label.strip()
-
-    def generate_morning_brief(self, trade_date: str | None = None, fetch_events: bool = False) -> dict[str, Any]:
-        token = normalize_trade_date(trade_date or self._today())
-        fetch_result = None
-        if fetch_events:
-            try:
-                fetch_result = self.fetch_watchlist_events(end_date=token)
-            except Exception as exc:
-                fetch_result = {"errors": [str(exc)], "inserted": 0}
-        events = self.list_info_events(trade_date=token, limit=200)
-        deduped_events = self._dedupe_info_events(events)
-        high_priority = [item for item in deduped_events if item.get("priority") == "high"]
-        normal_priority = [item for item in deduped_events if item.get("priority") != "high"]
-        cross_source_events = [item for item in deduped_events if int(item.get("source_count") or 1) > 1]
-        source_groups = self._group_events_by_source(deduped_events)
-        active_plans = self.list_plans(active_only=True, trade_date=token)
-        pending_reviews = self.list_reviews(status="pending", limit=20)
-        snapshots = self._watchlist_snapshot(token)
-        plan_evolution_reminders: list[dict[str, Any]] = []
-        if self.config.get("notifications", {}).get("include_evolution_reminders_in_morning_brief", True):
-            for item in active_plans[:10]:
-                reminder = self.generate_evolution_reminder(
-                    logic_tags=json_loads(item.get("logic_tags_json"), []),
-                    market_stage=item.get("market_stage_tag"),
-                    environment_tags=json_loads(item.get("environment_tags_json"), []),
-                    trade_date=token,
-                    write_artifact=False,
-                )
-                if reminder.get("matched_quality_paths") or reminder.get("matched_reusable_genes") or reminder.get("matched_risk_genes"):
-                    plan_evolution_reminders.append(
-                        {
-                            "plan_id": item.get("plan_id"),
-                            "name": item.get("name") or item.get("ts_code"),
-                            "reminder": reminder,
-                        }
-                    )
-        markdown_lines = [f"# 每日晨报 | {token}", "", "## 事件概览"]
-        markdown_lines.append(f"- 原始事件数: {len(events)}")
-        markdown_lines.append(f"- 去重后事件数: {len(deduped_events)}")
-        markdown_lines.append(f"- 高优先级事件数: {len(high_priority)}")
-        markdown_lines.append(f"- 交叉验证事件数: {len(cross_source_events)}")
-        if source_groups:
-            markdown_lines.append("- 来源分布: " + "、".join(f"{item['source']}({item['count']})" for item in source_groups[:6]))
-        if fetch_result:
-            inserted = fetch_result.get("inserted", 0)
-            errors = fetch_result.get("errors") or []
-            markdown_lines.append(f"- 本轮抓取: 新增 {inserted} 条，错误 {len(errors)} 条")
-        markdown_lines.extend(["", "## 必读事项"])
-        if high_priority:
-            for item in high_priority[:10]:
-                markdown_lines.append(f"- {self._format_event_brief_line(item, include_sources=True)}")
-        else:
-            markdown_lines.append("- 暂无高优先级事件。")
-        markdown_lines.extend(["", "## 关注事件"])
-        if normal_priority:
-            for item in normal_priority[:15]:
-                markdown_lines.append(f"- {self._format_event_brief_line(item, include_sources=True)}")
-        else:
-            markdown_lines.append("- 暂无新增普通事件。")
-        if source_groups:
-            markdown_lines.extend(["", "## 按来源分组"])
-            for group in source_groups[:5]:
-                markdown_lines.append(f"- {group['source']}: 共 {group['count']} 条，其中高优先级 {group['high_priority_count']} 条")
-                for item in group["events"][:4]:
-                    markdown_lines.append(f"  - {self._format_event_brief_line(item, include_sources=False)}")
-        if cross_source_events:
-            markdown_lines.extend(["", "## 交叉验证事件"])
-            for item in cross_source_events[:8]:
-                markdown_lines.append(f"- {self._format_event_brief_line(item, include_sources=True)}")
-        markdown_lines.extend(["", "## 今日有效计划"])
-        if active_plans:
-            for item in active_plans:
-                markdown_lines.append(
-                    f"- {item.get('name') or item['ts_code']}: {item['thesis']} | 买入区间 {item.get('buy_zone') or '-'} | 止损 {item.get('stop_loss') or '-'} | 有效期至 {item.get('valid_to')}"
-                )
-        else:
-            markdown_lines.append("- 今日暂无有效待执行计划。")
-        if pending_reviews:
-            markdown_lines.extend(["", "## 待处理回顾"])
-            for item in pending_reviews[:10]:
-                markdown_lines.append(f"- {item.get('name') or item.get('ts_code')}: {item.get('prompt_text') or '已有待处理卖出回顾。'}")
-        if plan_evolution_reminders:
-            markdown_lines.extend(["", "## 自进化提醒"])
-            for item in plan_evolution_reminders[:10]:
-                first_line = (item["reminder"].get("reminders") or ["暂无提醒"])[0]
-                markdown_lines.append(f"- {item['name']}: {first_line}")
-        if snapshots:
-            markdown_lines.extend(["", "## 关注池上个交易日快照"])
-            for item in snapshots[:20]:
-                bar = item.get("bar") or {}
-                price = bar.get("close") or "N/A"
-                pct = bar.get("pct_chg") or "N/A"
-                markdown_lines.append(f"- {item['name']} ({item['ts_code']}): {item['reference_date']} 收盘 {price}，涨跌 {pct}")
-        markdown_lines.append("")
-        markdown_lines.append("以上内容仅用于信息提醒与纪律辅助，不构成任何交易建议。")
-        payload = {
-            "trade_date": token,
-            "raw_events": events,
-            "deduped_events": deduped_events,
-            "high_priority_events": high_priority,
-            "normal_priority_events": normal_priority,
-            "cross_source_events": cross_source_events,
-            "source_groups": source_groups,
-            "active_plans": active_plans,
-            "pending_reviews": pending_reviews,
-            "plan_evolution_reminders": plan_evolution_reminders,
-            "watchlist_snapshots": snapshots,
-            "fetch_result": fetch_result,
-        }
-        paths = self._write_artifact(token, "morning_brief", payload, "\n".join(markdown_lines).strip() + "\n")
-        payload["artifact_paths"] = paths
-        return payload
-
-    def capture_market_snapshot(
-        self,
-        trade_date: str,
-        ts_code: str,
-        name: str | None = None,
-        sector_name: str | None = None,
-        sector_change_pct: float | None = None,
-    ) -> dict[str, Any] | None:
-        if not self.market:
-            return None
-        snapshot = self.market.build_market_snapshot(trade_date, ts_code=ts_code, name=name, sector_name=sector_name, sector_change_pct=sector_change_pct)
-        snapshot_id = make_id("snapshot")
-        self.db.execute(
-            """
-            INSERT INTO market_snapshots(
-                snapshot_id, trade_date, ts_code, name, sh_change_pct, cyb_change_pct, up_down_ratio,
-                limit_up_count, limit_down_count, sector_name, sector_change_pct, sector_strength_tag,
-                raw_payload_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                snapshot_id,
-                snapshot["trade_date"],
-                snapshot.get("ts_code") or "",
-                snapshot.get("name") or "",
-                snapshot.get("sh_change_pct"),
-                snapshot.get("cyb_change_pct"),
-                snapshot.get("up_down_ratio"),
-                snapshot.get("limit_up_count"),
-                snapshot.get("limit_down_count"),
-                snapshot.get("sector_name") or "",
-                snapshot.get("sector_change_pct"),
-                snapshot.get("sector_strength_tag") or "",
-                json_dumps(snapshot.get("raw_payload") or {}),
-                now_ts(),
-            ),
-        )
-        snapshot["snapshot_id"] = snapshot_id
-        return snapshot
 
     def _compute_benchmark_return(self, ts_code: str, buy_date: str, sell_date: str) -> float | None:
         if not self.market:
@@ -2757,6 +2631,7 @@ class FinanceJournalApp:
         if plan_id:
             self.update_plan_status(plan_id, "executed", trade_id=trade_id)
         trade_row = self.get_trade(trade_id) or {}
+        trade_row["memory_cell"] = self._sync_memory_for_entity("trade", trade_id)
         if split_tags(logic_type_tags) or split_tags(pattern_tags) or market_stage_tag or split_tags(environment_tags):
             trade_row["evolution_reminder"] = self.generate_evolution_reminder(
                 logic_tags=split_tags(logic_type_tags),
@@ -2834,6 +2709,7 @@ class FinanceJournalApp:
             ),
         )
         trade_row = self.get_trade(trade_id) or {}
+        trade_row["memory_cell"] = self._sync_memory_for_entity("trade", trade_id)
         if self._vault_enabled() and self.config.get("vault", {}).get("auto_export_after_trade", True):
             trade_row["vault_note"] = self.export_trade_note(trade_id)
             trade_row["daily_vault_note"] = self.export_daily_note(normalized_sell_date)
@@ -2907,10 +2783,12 @@ class FinanceJournalApp:
             ),
         )
         updated_trade = self.get_trade(trade_id) or {}
+        memory_cell = self._sync_memory_for_entity("trade", trade_id)
         journal_kind = "closed_trade" if normalized_sell_date else "open_trade"
         reflection_prompts = build_reflection_prompts(merged_fields, journal_kind, [])
         response = {
             "trade": updated_trade,
+            "memory_cell": memory_cell,
             "parsed": parsed,
             "updated_fields": self._changed_field_names(
                 before_fields,
@@ -4022,6 +3900,13 @@ class FinanceJournalApp:
         )
         payload["period_start"] = start_date
         payload["period_end"] = end_date
+        payload["memory_candidates"] = self.query_memory(
+            ts_code=None,
+            market_stage=market_stage,
+            tags=split_tags(logic_tags) + split_tags(pattern_tags) + split_tags(environment_tags),
+            limit=5,
+        )
+        payload["linked_skill_cards"] = payload["memory_candidates"].get("linked_skill_cards", [])
         if write_artifact:
             stem = "evolution_reminder_" + safe_filename(
                 "_".join(split_tags(logic_tags) + split_tags(pattern_tags) + split_tags(environment_tags) + ([market_stage] if market_stage else []))
@@ -4073,6 +3958,12 @@ class FinanceJournalApp:
             (start_date, end_date),
         )
         payload = build_reference_report(trades, split_tags(logic_tags), market_stage, split_tags(environment_tags), int(lookback_days))
+        payload["memory_candidates"] = self.query_memory(
+            market_stage=market_stage,
+            tags=split_tags(logic_tags) + split_tags(environment_tags),
+            limit=5,
+        )
+        payload["linked_skill_cards"] = payload["memory_candidates"].get("linked_skill_cards", [])
         if write_artifact:
             stem = "plan_reference_" + safe_filename("_".join(split_tags(logic_tags)) or market_stage or "all")
             payload["artifact_paths"] = self._write_artifact(end_date, stem, payload, payload.get("markdown"))
@@ -4181,7 +4072,10 @@ class FinanceJournalApp:
                     "UPDATE trades SET review_status = ?, updated_at = ? WHERE trade_id = ?",
                     ("generated" if triggered else "flat", now_value, trade["trade_id"]),
                 )
-            created.append(self.db.fetchone("SELECT * FROM reviews WHERE review_id = ?", (review_id,)) or {})
+            created_review = self.db.fetchone("SELECT * FROM reviews WHERE review_id = ?", (review_id,)) or {}
+            if created_review.get("review_id"):
+                created_review["memory_cell"] = self._sync_memory_for_entity("review", created_review["review_id"])
+            created.append(created_review)
         payload = {"as_of_date": token, "created_reviews": created, "skipped": skipped}
         payload["artifact_paths"] = self._write_artifact(token, "review_cycle", payload, None)
         if self._vault_enabled() and created:
@@ -4209,6 +4103,7 @@ class FinanceJournalApp:
             (feedback, weight_action, now_ts(), review_id),
         )
         review_row = self.db.fetchone("SELECT * FROM reviews WHERE review_id = ?", (review_id,)) or {}
+        review_row["memory_cell"] = self._sync_memory_for_entity("review", review_id)
         if self._vault_enabled() and self.config.get("vault", {}).get("auto_export_after_review", True):
             review_row["vault_note"] = self.export_review_note(review_id)
             review_row["daily_vault_note"] = self.export_daily_note(review_row.get("review_due_date") or review_row.get("sell_date") or self._today())
@@ -4292,24 +4187,11 @@ class FinanceJournalApp:
         actions: list[dict[str, Any]] = []
         schedules = self.config.get("schedules", {})
         current_hhmm = current.strftime("%H:%M")
-        has_remote_event_source = bool(self.market or self._configured_url_adapters())
-        if has_remote_event_source:
-            for slot_time in self._schedule_time_list(schedules.get("event_fetch_times", [])):
-                if current_hhmm >= slot_time:
-                    actions.append(
-                        {
-                            "slot": f"event_fetch:{today}:{slot_time.replace(':', '')}",
-                            "kind": "event_fetch",
-                            "trade_date": today,
-                            "scheduled_time": slot_time,
-                        }
-                    )
-        if current_hhmm >= str(schedules.get("morning_brief_time", "08:00")):
+        if current_hhmm >= str(schedules.get("memory_compaction_time", "08:00")):
             actions.append(
                 {
-                    "slot": f"morning_brief:{today}",
-                    "kind": "morning_brief",
-                    "fetch_events": bool(schedules.get("fetch_events_before_morning_brief", False) and has_remote_event_source),
+                    "slot": f"memory_compaction:{today}",
+                    "kind": "memory_compaction",
                 }
             )
         if current_hhmm >= str(schedules.get("review_run_time", "17:30")):
@@ -4333,13 +4215,12 @@ class FinanceJournalApp:
         for item in actions:
             if not force and self._slot_exists(item["slot"]):
                 continue
-            if item["kind"] == "event_fetch":
-                result = self.fetch_watchlist_events(end_date=item.get("trade_date") or today)
-                artifact_paths = self._write_artifact(today, f"event_poll_{item['slot'].replace(':', '_')}", result)
+            if item["kind"] == "memory_compaction":
+                rebuild = self.rebuild_memory(limit=int(self.config.get("memory", {}).get("compaction_limit", 200)))
+                skillize = self.skillize_memory(lookback_days=365, trade_date=today)
+                result = {"rebuild": rebuild, "skillize": skillize}
+                artifact_paths = self._write_artifact(today, f"memory_compaction_{today}", result)
                 artifact = artifact_paths.get("json") or ""
-            elif item["kind"] == "morning_brief":
-                result = self.generate_morning_brief(trade_date=today, fetch_events=bool(item.get("fetch_events")))
-                artifact = result.get("artifact_paths", {}).get("markdown") or result.get("artifact_paths", {}).get("json") or ""
             elif item["kind"] == "review_cycle":
                 result = self.run_review_cycle(as_of_date=today)
                 artifact = result.get("artifact_paths", {}).get("json") or ""

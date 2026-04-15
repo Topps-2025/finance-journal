@@ -13,23 +13,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "relative_path": "data/finance_journal.db",
     },
     "schedules": {
-        "event_fetch_times": [],
-        "fetch_events_before_morning_brief": False,
-        "morning_brief_time": "08:00",
+        "memory_compaction_time": "08:00",
         "plan_reminder_time": "08:30",
         "review_run_time": "17:30",
         "health_report_time": "08:10",
     },
     "monitoring": {
-        "announcement_lookback_days": 1,
         "review_window_days": 5,
         "sell_fly_threshold_pct": 8.0,
         "escape_top_threshold_pct": 8.0,
     },
     "notifications": {
-        "include_watchlist_snapshot": True,
-        "include_plan_reference_in_morning_brief": False,
-        "include_evolution_reminders_in_morning_brief": True,
+        "include_memory_on_daily_note": True,
+        "include_skill_cards_on_daily_note": True,
     },
     "vault": {
         "enabled": True,
@@ -39,18 +35,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "auto_export_after_review": True,
         "auto_export_after_health_report": True,
     },
-    "tushare": {
-        "enabled": True,
-        "token_env_keys": ["TUSHARE_TOKEN", "TS_TOKEN"],
-        "announcement_endpoint": "anns_d",
-        "news_endpoint": "news",
-        "macro_endpoint": "major_news",
-    },
-    "url_sources": {
-        "enabled": False,
-        "timeout_seconds": 20,
-        "user_agent": "Mozilla/5.0 (FinanceJournalBot)",
-        "adapters": [],
+    "memory": {
+        "fts_enabled": True,
+        "max_query_candidates": 24,
+        "default_query_limit": 8,
+        "skillize_min_samples": 2,
+        "community_share_min_samples": 3,
+        "compaction_limit": 200,
     },
 }
 

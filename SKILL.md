@@ -1,6 +1,6 @@
 ---
 name: finance-journal
-description: Workspace-level routing skill for the Finance Journal framework. Use it when the caller needs the top-level capability map, implementation status, or routing into the more specific sub-skills.
+description: Workspace-level routing skill for the Finance Journal framework. Use it for the top-level capability map, memory architecture, and routing into the journaling sub-skills.
 ---
 
 # Finance Journal Workspace
@@ -8,6 +8,7 @@ description: Workspace-level routing skill for the Finance Journal framework. Us
 ## Read First
 
 - `README.md`
+- `TRADE_MEMORY_ARCHITECTURE.md`
 - `IMPLEMENTED_FEATURES.md`
 - `NOT_IMPLEMENTED_YET.md`
 - `finance-journal-orchestrator/references/openclaw-skill-functional-spec.md`
@@ -15,21 +16,20 @@ description: Workspace-level routing skill for the Finance Journal framework. Us
 
 ## Route by Intent
 
-- session-based journaling, multi-turn follow-up, ledger apply, vault sync -> `$finance-journal-orchestrator`
-- news, announcements, keywords, morning brief inputs -> `$finance-info-monitor`
+- session journaling, draft continuation, statement import, vault sync -> `$finance-journal-orchestrator`
 - plan creation, updates, and reference generation -> `$trade-plan-assistant`
-- trade records, post-trade review, self-evolution, style portrait -> `$trade-evolution-engine`
-- discipline, frequency, and health reporting -> `$behavior-health-reporter`
+- trade logs, post-trade review, self-evolution, style portrait -> `$trade-evolution-engine`
+- discipline and health reporting -> `$behavior-health-reporter`
 
 ## Root Responsibilities
 
-1. decide whether the user is asking about overall framework status or a concrete workflow
-2. if it is a framework-level question, summarize implemented and missing capabilities first
-3. if it is an execution request, route to the most relevant sub-skill instead of duplicating logic here
-4. if the task spans multiple modules, explain the orchestration path clearly
+1. explain the memory-centric framework boundary
+2. route execution requests to the right sub-skill
+3. clarify how memory retrieval and bandit reranking fit together
+4. point users to the community vision when they ask about shared memories or skills
 
 ## Boundaries
 
-- this is a trade journaling and review framework, not an execution engine
-- information fetchers collect context, not buy or sell instructions
+- this is a trade journaling and long-term memory framework, not an execution engine
 - self-evolution outputs are review aids, not automatic trading rules
+- community-facing skill cards are reusable experience layers, not copy-trading signals

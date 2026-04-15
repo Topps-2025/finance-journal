@@ -1,80 +1,54 @@
 # Implemented Features
 
-Updated: 2026-04-12
-
-This file summarizes what is already implemented in the current codebase.
+Updated: 2026-04-15
 
 ## Core Journal System
 
 - local SQLite-backed ledger and runtime storage
-- entities for watchlists, keywords, plans, trades, reviews, reports, drafts, and session threads
+- plans, trades, reviews, reports, drafts, and session threads
 - JSON and Markdown artifact generation
-- Obsidian vault export
+- Obsidian-style vault export
 
-## Free-Form Intake and Drafting
+## Conversation and Session Logic
 
-- `intake parse`
-- `intake apply`
-- conservative parsing that avoids misreading six-digit symbols as dates or prices
-- missing-field detection and follow-up question generation
-- standardized record preview
-- reflection prompts for post-fact enrichment
-- draft state machine with start, reply, show, apply, list, and cancel flows
+- `intake parse` / `intake apply`
+- draft state machine with start, reply, show, apply, list, cancel
+- `session turn`, `session state`, `session reset`
+- same-day and same-symbol short-term session reuse
+- statement-import continuation through session state
 
-## Session Logic
+## Trade Memory Layer
 
-- `session turn`, `session state`, and `session reset`
-- per-session draft ownership through `session_key`
-- safe reuse of same-day market context
-- safe reuse of same-symbol thesis context
-- session persistence through `session_threads`
-- `shared_context_hints` and `parallel_question_groups` in the polling bundle
-
-## Statement Import
-
-- `trade import-statement`
-- CSV and JSON row import
-- fact-first alignment of symbol, dates, prices, quantity, amount, and fee fields
-- matching against existing trades when possible
-- automatic close-out of an existing open trade when the imported facts fit
-- follow-up queue and pending question support so the conversation can continue with reasoning and reflection
-- gateway support for statement import through a structured command route
-
-## Decision Context and Semi-Quant Support
-
-- persistence of `decision_context_json` on plans and trades
-- support for user focus, observed signals, position reason, confidence, stress, emotions, and mistake tags
-- nested `strategy_context` for semi-quant workflows
-- strategy line, factor set, activation reason, parameter version, portfolio role, and override notes can be stored and rendered
-- vault export renders the extended decision context fields
+- `memory_cells`, `memory_scenes`, `memory_hyperedges`, `memory_skill_cards`
+- SQLite FTS5-backed coarse recall
+- structured memory filtering by symbol / stage / strategy / tags
+- scene expansion and linked skill-card retrieval
+- memory snapshots written to `_runtime/memory/`
+- `memory rebuild`, `memory query`, `memory skillize`
 
 ## Planning, Trading, Review, and Analytics
 
-- plan creation and status management
-- trade logging and closing
-- plan and trade enrichment after initial storage
+- plan creation, listing, status update, and enrichment
+- trade logging, closing, and enrichment
+- statement import with fact-first alignment
 - post-trade review cycle
-- self-evolution reports and reminders
+- self-evolution report and reminder
 - style portrait generation
 - behavior health reporting
 
-## Information Monitoring
+## Evolution and Skill Solidification
 
-- manual event entry
-- URL-based news and announcement fetchers
-- multiple parser modes, including timeline, list, article, RSS, JSON, and embedded JSON
-- morning brief generation
-- schedule-aware event polling hooks
+- trajectory self-evolution still uses contextual-bandit-style reranking
+- long-term memory now acts as the recall layer before bandit prioritization
+- stable high-value paths can be solidified into skill cards
+- skill cards can be marked as community-shareable when evidence is sufficient
 
-## Repository and Collaboration Infrastructure
+## Documentation and Repo Packaging
 
-- `LICENSE`
-- `CONTRIBUTING.md`
-- `CODE_OF_CONDUCT.md`
-- `SECURITY.md`
-- `SUPPORT.md`
-- issue templates, PR template, CI workflow, and Dependabot config
-- dependency entry point through `requirements.txt`
+- `TRADE_MEMORY_ARCHITECTURE.md` for the concise design note
+- `TRADE_MEMORY_SYSTEM_PAPER.md` for the paper-style architecture write-up
+- updated public/private sync policy in `README.md` and `README.zh-CN.md`
+- legacy news bootstrap tables removed from the active schema bootstrap
 
 ## Verified Locally
 
