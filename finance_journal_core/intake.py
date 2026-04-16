@@ -779,6 +779,127 @@ def _build_parallel_question_groups(bundle_items: dict[str, dict[str, Any]]) -> 
     return groups[:4]
 
 
+GUIDED_PROMPT_SECTION_SPECS = [
+    ("fact", "事实核对", ("ts_code", "direction", "buy_date", "buy_price", "sell_date", "sell_price", "stop_loss")),
+    ("thesis", "核心逻辑", ("thesis", "logic_tags", "pattern_tags")),
+    ("signal", "触发与环境", ("user_focus", "observed_signals", "environment_tags")),
+    ("position", "仓位与边界", ("position_reason", "position_confidence", "holding_period", "sell_zone")),
+    ("review", "情绪与复盘", ("emotion_notes", "mistake_tags", "lessons_learned", "stress_level")),
+]
+
+GUIDED_PROMPT_SECTION_HINTS = {
+    "fact": {
+        "question": "先把这笔记录的客观事实一次说完，优先补标的、日期、价格、方向和止损。",
+        "placeholder": "标的/日期/价格/方向/止损=...",
+    },
+    "thesis": {
+        "question": "再用一句话概括为什么出手，保留你当时最核心的主线判断。",
+        "placeholder": "核心逻辑=...",
+    },
+    "signal": {
+        "question": "继续补你当时重点盯的对象，以及真正触发动作的市场切片。",
+        "placeholder": "关注对象/触发信号/环境=...",
+    },
+    "position": {
+        "question": "然后说明仓位为什么这样配，以及你的纪律边界和把握度。",
+        "placeholder": "仓位理由/把握度/计划边界=...",
+    },
+    "review": {
+        "question": "最后补当时的情绪、这笔最容易重复的错误，以及复盘教训。",
+        "placeholder": "情绪/错误/教训=...",
+    },
+}
+
+
+def _section_key_for_field(field_name: str) -> str:
+    for section_key, _, field_names in GUIDED_PROMPT_SECTION_SPECS:
+        if field_name in field_names:
+            return section_key
+    return ""
+
+
+def _build_guided_prompt(
+    bundle_items: dict[str, dict[str, Any]],
+    *,
+    next_field: str,
+    next_axis: str,
+) -> dict[str, Any]:
+    sections: list[dict[str, Any]] = []
+    for section_key, label, field_names in GUIDED_PROMPT_SECTION_SPECS:
+        active_fields = [name for name in field_names if name in bundle_items]
+        if not active_fields:
+            continue
+        hints = GUIDED_PROMPT_SECTION_HINTS.get(section_key, {})
+        examples = _dedupe_texts(
+            [
+                example
+                for field_name in active_fields
+                for example in list((bundle_items.get(field_name) or {}).get("examples", []))
+            ],
+            limit=4,
+        )
+        sections.append(
+            {
+                "section": section_key,
+                "label": label,
+                "fields": active_fields,
+                "question": hints.get("question", ""),
+                "placeholder": hints.get("placeholder", ""),
+                "examples": examples,
+            }
+        )
+
+    next_section = ""
+    for section in sections:
+        if next_field and next_field in section.get("fields", []):
+            next_section = str(section.get("label") or "")
+            break
+    if not next_section and next_axis:
+        axis_map = {
+            "selection": "触发与环境",
+            "timing": "触发与环境",
+            "position": "仓位与边界",
+            "emotion": "情绪与复盘",
+        }
+        next_section = axis_map.get(next_axis, "")
+    lines = ["建议按这个模板一次补，没提到的项写“无”即可："]
+    for index, section in enumerate(sections, start=1):
+        line = f"{index}. {section['label']}：{section['placeholder']}"
+        if section["examples"]:
+            line += f"（例如：{section['examples'][0]}）"
+        lines.append(line)
+    return {
+        "opening": "建议按这个模板顺着补，减少漏问和来回轮询。",
+        "next_section": next_section,
+        "sections": sections,
+        "reply_template": "\n".join(lines),
+    }
+
+
+def _build_self_checklist(
+    missing_queue: list[dict[str, Any]],
+    reflection_queue: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    checklist: list[dict[str, Any]] = []
+    seen_fields: set[str] = set()
+    for priority, items in (("required", missing_queue), ("context", reflection_queue)):
+        for item in items:
+            field_name = str(item.get("field") or "")
+            if not field_name or field_name in seen_fields:
+                continue
+            seen_fields.add(field_name)
+            checklist.append(
+                {
+                    "field": field_name,
+                    "priority": priority,
+                    "section": _section_key_for_field(field_name),
+                    "question": str(item.get("question") or ""),
+                    "purpose": str(item.get("purpose") or FIELD_PURPOSES.get(field_name, "")),
+                }
+            )
+    return checklist
+
+
 def build_polling_bundle(
     fields: dict[str, Any],
     journal_kind: str,
@@ -821,6 +942,8 @@ def build_polling_bundle(
     bundle_items = _build_bundle_item_map(missing_queue, reflection_queue)
     shared_context_hints = _build_shared_context_hints(bundle_items, journal_kind)
     parallel_question_groups = _build_parallel_question_groups(bundle_items)
+    guided_prompt = _build_guided_prompt(bundle_items, next_field=next_field, next_axis=next_axis)
+    self_checklist = _build_self_checklist(missing_queue, reflection_queue)
     return {
         "journal_kind": journal_kind,
         "next_field": next_field,
@@ -842,6 +965,8 @@ def build_polling_bundle(
         "next_axis": next_axis,
         "shared_context_hints": shared_context_hints,
         "parallel_question_groups": parallel_question_groups,
+        "guided_prompt": guided_prompt,
+        "self_checklist": self_checklist,
         "completion_progress": {
             "required_total": required_total,
             "required_filled": required_total - required_missing,

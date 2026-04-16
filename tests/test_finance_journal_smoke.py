@@ -152,6 +152,39 @@ class FinanceJournalSmokeTest(unittest.TestCase):
         self.assertEqual(second["route"], "entity_enriched")
         self.assertIn("memory_retrieval", second)
 
+    def test_draft_polling_bundle_includes_guided_template(self) -> None:
+        draft_turn = self.app.handle_session_turn(
+            "qq:user_draft",
+            "\u4eca\u5929\u4e70\u4e86600519",
+            trade_date="20260411",
+        )
+        self.assertEqual(draft_turn["route"], "draft_started")
+        draft = draft_turn["draft"]
+        guided_prompt = ((draft.get("polling_bundle") or {}).get("guided_prompt") or {})
+        self.assertTrue(guided_prompt.get("sections"))
+        self.assertTrue(guided_prompt.get("reply_template"))
+        self.assertTrue((draft.get("polling_bundle") or {}).get("self_checklist"))
+
+    def test_session_apply_returns_daily_self_check(self) -> None:
+        self.app.handle_session_turn(
+            "qq:user_self_check",
+            "\u4eca\u5929\u4e70\u4e86600519\uff0c\u903b\u8f91\u662f\u9ad8\u80a1\u606f\u4fee\u590d\u4f4e\u5438",
+            trade_date="20260411",
+        )
+        payload = self.app.handle_session_turn(
+            "qq:user_self_check",
+            "1360",
+            trade_date="20260411",
+        )
+        self.assertEqual(payload["route"], "draft_applied")
+        daily_self_check = ((payload.get("draft") or {}).get("result") or {}).get("daily_self_check") or {}
+        self.assertEqual(daily_self_check.get("trade_date"), "20260411")
+        self.assertEqual(daily_self_check.get("status"), "needs_follow_up")
+        self.assertGreaterEqual(((daily_self_check.get("summary") or {}).get("incomplete_trades") or 0), 1)
+        self.assertTrue(daily_self_check.get("top_missing_fields"))
+        self.assertIn("\u81ea\u68c0", payload.get("assistant_message") or "")
+
+
     def test_statement_import_and_memory_rebuild(self) -> None:
         statement_path = self.runtime_root / "statement_rows.csv"
         statement_path.write_text(

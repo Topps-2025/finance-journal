@@ -1018,10 +1018,13 @@ class FinanceJournalApp:
     def _assistant_message_for_draft(self, draft: dict[str, Any]) -> str:
         missing = "、".join(draft.get("missing_fields") or [])
         next_question = draft.get("next_question") or "继续补充即可。"
-        examples = ((draft.get("polling_bundle") or {}).get("examples") or [])
+        polling_bundle = draft.get("polling_bundle") or {}
+        examples = (polling_bundle.get("examples") or [])
         example_text = f" 例如：{examples[0]}。" if examples else ""
         reuse_prefix = self._session_reuse_summary(draft.get("session_reuse") or [])
-        return f"{reuse_prefix}我先帮你起草好了，当前还缺：{missing or '无'}。下一问：{next_question}{example_text}"
+        guided_prompt = (polling_bundle.get("guided_prompt") or {}).get("reply_template") or ""
+        template_text = f"\n{guided_prompt}" if guided_prompt else ""
+        return f"{reuse_prefix}我先帮你起草好了，当前还缺：{missing or '无'}。下一问：{next_question}{example_text}{template_text}"
 
     def _assistant_message_for_applied(
         self,
@@ -1042,6 +1045,101 @@ class FinanceJournalApp:
         if reflection_prompts:
             tail = f" 下一步可继续想一想：{reflection_prompts[0].get('question') or ''}"
         return f"已把补充内容沉淀回原{label}，这次更新了：{changed}.{tail}".strip()
+
+    def _resolve_self_check_trade_date(
+        self,
+        fields: dict[str, Any] | None,
+        journal_kind: str,
+        fallback_trade_date: str | None = None,
+    ) -> str:
+        if fallback_trade_date:
+            return normalize_trade_date(fallback_trade_date)
+        payload = fields or {}
+        if journal_kind == "close_only":
+            return normalize_trade_date(payload.get("sell_date") or self._today())
+        return normalize_trade_date(payload.get("buy_date") or payload.get("sell_date") or self._today())
+
+    def _build_daily_self_check(self, trade_date: str | None) -> dict[str, Any]:
+        if not trade_date:
+            return {}
+        token = normalize_trade_date(trade_date)
+        backlog = self.build_trade_follow_up_backlog(trade_date=token, include_complete=False)
+        items = list(backlog.get("items") or [])
+        field_label_map = {
+            "thesis": "核心逻辑",
+            "user_focus": "关注对象",
+            "observed_signals": "触发信号",
+            "position_reason": "仓位理由",
+            "environment_tags": "环境标签",
+            "position_confidence": "把握度",
+            "emotion_notes": "情绪记录",
+            "mistake_tags": "错误标签",
+            "stress_level": "压力分",
+            "lessons_learned": "复盘教训",
+        }
+        field_counts: dict[str, int] = {}
+        for item in items:
+            for field_name in list(item.get("blocking_missing_fields") or []) + list(item.get("missing_context_fields") or []):
+                token_name = str(field_name or "").strip()
+                if not token_name:
+                    continue
+                field_counts[token_name] = field_counts.get(token_name, 0) + 1
+        top_missing_fields = [
+            field_label_map.get(name, name)
+            for name, _ in sorted(field_counts.items(), key=lambda pair: (-pair[1], pair[0]))[:4]
+        ]
+        summary = backlog.get("summary") or {}
+        incomplete = int(summary.get("incomplete_trades") or 0)
+        total_scanned = int(summary.get("total_scanned") or 0)
+        next_question = str(items[0].get("next_question") or "").strip() if items else ""
+        if total_scanned == 0:
+            assistant_message = f" 今日自检：{token} 还没有交易记录。"
+            status = "empty"
+        elif incomplete == 0:
+            assistant_message = f" 今日自检通过：{token} 当前没有待补字段。"
+            status = "passed"
+        else:
+            field_text = "、".join(top_missing_fields) if top_missing_fields else "主观轨迹字段"
+            tail = f" 下一问建议先补：{next_question}" if next_question else ""
+            assistant_message = f" 今日自检：{token} 还有 {incomplete} 笔记录待补，优先补 {field_text}。{tail}".rstrip()
+            status = "needs_follow_up"
+        return {
+            "trade_date": token,
+            "status": status,
+            "assistant_message": assistant_message,
+            "summary": summary,
+            "top_missing_fields": top_missing_fields,
+            "next_question": next_question,
+            "items": items[:5],
+            "parallel_groups": list((backlog.get("parallel_groups") or [])[:3]),
+        }
+
+    def _append_daily_self_check_message(self, message: str, daily_self_check: dict[str, Any] | None) -> str:
+        extra = str((daily_self_check or {}).get("assistant_message") or "").strip()
+        if not extra:
+            return message
+        base = str(message or "").rstrip()
+        if not base:
+            return extra
+        return f"{base} {extra}".strip()
+
+    def _attach_post_apply_checks(
+        self,
+        payload: dict[str, Any],
+        *,
+        fields: dict[str, Any] | None,
+        journal_kind: str,
+        trade_date: str | None = None,
+    ) -> dict[str, Any]:
+        enriched = dict(payload or {})
+        if journal_kind not in {"open_trade", "closed_trade", "close_only"}:
+            return enriched
+        self_check = self._build_daily_self_check(
+            self._resolve_self_check_trade_date(fields, journal_kind, fallback_trade_date=trade_date)
+        )
+        if self_check:
+            enriched["daily_self_check"] = self_check
+        return enriched
 
     def _entity_info_from_response(self, entity_kind: str, payload: dict[str, Any]) -> tuple[str, str]:
         if entity_kind == "plan":
@@ -1493,6 +1591,12 @@ class FinanceJournalApp:
             draft.get("journal_kind") or "open_trade",
             trade_date=draft.get("trade_date"),
         )
+        apply_result = self._attach_post_apply_checks(
+            apply_result,
+            fields=draft.get("fields") or {},
+            journal_kind=draft.get("journal_kind") or "open_trade",
+            trade_date=draft.get("trade_date"),
+        )
         entity_kind, entity_id = self._applied_entity_info(apply_result)
         new_status = "applied" if apply_result.get("applied") else draft.get("status") or "active"
         self.db.execute(
@@ -1512,6 +1616,8 @@ class FinanceJournalApp:
         )
         fresh = self.get_journal_draft(resolved_id, session_key=session_key) or {}
         fresh["result"] = apply_result
+        if apply_result.get("daily_self_check"):
+            fresh["daily_self_check"] = apply_result.get("daily_self_check") or {}
         fresh["auto_selected_latest_active"] = auto_selected
         return fresh
 
@@ -1525,6 +1631,12 @@ class FinanceJournalApp:
             }
 
         apply_result = self._apply_journal_fields(draft["fields"], draft["journal_kind"], trade_date=trade_date)
+        apply_result = self._attach_post_apply_checks(
+            apply_result,
+            fields=draft.get("fields") or {},
+            journal_kind=draft.get("journal_kind") or "open_trade",
+            trade_date=trade_date,
+        )
         if not apply_result.get("applied"):
             return {
                 "applied": False,
@@ -1538,6 +1650,7 @@ class FinanceJournalApp:
             "draft": draft,
             "result": apply_result["result"],
             "resolved_trade_id": apply_result.get("resolved_trade_id") or "",
+            "daily_self_check": apply_result.get("daily_self_check") or {},
         }
 
     def reset_session_thread(self, session_key: str | None, reason: str = "") -> dict[str, Any]:
@@ -1647,6 +1760,10 @@ class FinanceJournalApp:
                     entity_kind,
                     session_reuse=draft.get("session_reuse") or [],
                 )
+                assistant_message = self._append_daily_self_check_message(
+                    assistant_message,
+                    (draft.get("result") or {}).get("daily_self_check") or {},
+                )
                 if (draft.get("reflection_prompts") or []):
                     assistant_message += f" 接下来可以继续补一句：{draft['reflection_prompts'][0].get('question') or ''}"
                 self._upsert_session_thread(
@@ -1749,12 +1866,22 @@ class FinanceJournalApp:
         )
         if parsed.get("action_ready"):
             apply_result = self._apply_journal_fields(parsed["fields"], parsed["journal_kind"], trade_date=resolved_trade_date)
+            apply_result = self._attach_post_apply_checks(
+                apply_result,
+                fields=parsed.get("fields") or {},
+                journal_kind=parsed.get("journal_kind") or "open_trade",
+                trade_date=resolved_trade_date,
+            )
             entity_kind, entity_id = self._applied_entity_info(apply_result)
             assistant_message = self._assistant_message_for_applied(
                 parsed["journal_kind"],
                 parsed["fields"],
                 entity_kind,
                 session_reuse=parsed.get("session_reuse") or [],
+            )
+            assistant_message = self._append_daily_self_check_message(
+                assistant_message,
+                apply_result,
             )
             if (parsed.get("reflection_prompts") or []):
                 assistant_message += f" 接下来可以继续补一句：{parsed['reflection_prompts'][0].get('question') or ''}"
@@ -1764,6 +1891,7 @@ class FinanceJournalApp:
                 "draft": parsed,
                 "result": apply_result.get("result") or {},
                 "resolved_trade_id": apply_result.get("resolved_trade_id") or "",
+                "daily_self_check": apply_result.get("daily_self_check") or {},
             }
             next_memory = self._update_session_memory_from_fields(
                 current_memory,
