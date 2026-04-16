@@ -85,6 +85,17 @@ def _statement_text_value(value: Any) -> str:
     return text.strip()
 
 
+def _statement_side_kind(value: Any) -> str:
+    text = _statement_text_value(value).lower()
+    if not text:
+        return ""
+    if any(token in text for token in ("buy", "买")):
+        return "buy"
+    if any(token in text for token in ("sell", "卖")):
+        return "sell"
+    return ""
+
+
 class FinanceJournalApp:
     def __init__(
         self,
@@ -3392,6 +3403,257 @@ class FinanceJournalApp:
             )
         return rows
 
+    def _load_fixed_width_statement_rows(
+        self,
+        path: Path,
+        *,
+        encoding_candidates: list[str],
+    ) -> list[dict[str, Any]]:
+        last_error: Exception | None = None
+        for encoding in encoding_candidates:
+            try:
+                with path.open("r", encoding=encoding) as handle:
+                    lines = [line.rstrip("\r\n") for line in handle]
+            except UnicodeDecodeError as exc:
+                last_error = exc
+                continue
+            except OSError as exc:
+                last_error = exc
+                continue
+
+            content_lines = [line for line in lines if line.strip() and not set(line.strip()) <= {"-"}]
+            if not content_lines:
+                return []
+            header = [_statement_text_value(part) for part in re.split(r"\s{2,}", content_lines[0].strip()) if _statement_text_value(part)]
+            if len(header) < 2:
+                continue
+
+            rows: list[dict[str, Any]] = []
+            for line in content_lines[1:]:
+                parts = [_statement_text_value(part) for part in re.split(r"\s{2,}", line.strip())]
+                if len(parts) < len(header):
+                    continue
+                row = {
+                    header[index]: parts[index]
+                    for index in range(len(header))
+                    if header[index] and index < len(parts) and parts[index] != ""
+                }
+                if row:
+                    rows.append(row)
+            if rows:
+                return rows
+        if last_error:
+            raise last_error
+        return []
+
+    def _statement_numeric_sum(self, rows: list[dict[str, Any]], *keys: str) -> float | None:
+        total = 0.0
+        has_value = False
+        for row in rows:
+            value = self._statement_row_float(row, *keys)
+            if value is None:
+                continue
+            total += value
+            has_value = True
+        if not has_value:
+            return None
+        return total
+
+    def _statement_row_total_fee(self, row: dict[str, Any]) -> float | None:
+        explicit_fee = self._statement_row_float(row, "手续费", "fee")
+        primary_fee = explicit_fee if explicit_fee is not None else self._statement_row_float(row, "佣金", "commission")
+        values = [
+            primary_fee,
+            self._statement_row_float(row, "印花税", "stamp_duty"),
+            self._statement_row_float(row, "过户费", "transfer_fee"),
+            self._statement_row_float(row, "其他费", "other_fee"),
+        ]
+        numeric_values = [value for value in values if value is not None]
+        if not numeric_values:
+            return None
+        return sum(numeric_values)
+
+    def _statement_row_effective_price(self, row: dict[str, Any]) -> float | None:
+        quantity = self._statement_row_float(row, "quantity", "qty", "成交数量", "数量")
+        occurred_amount = self._statement_row_float(row, "发生金额", "occurred_amount", "net_amount", "actual_amount")
+        if quantity is None or abs(quantity) <= 1e-6 or occurred_amount is None:
+            return None
+        return abs(occurred_amount) / quantity
+
+    def _aggregate_statement_group(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        trade_date: str,
+        side_kind: str,
+        ts_code: str,
+        name: str,
+        account: str,
+    ) -> dict[str, Any]:
+        if len(rows) == 1:
+            return dict(rows[0])
+
+        ordered_rows = sorted(
+            rows,
+            key=lambda row: (
+                self._statement_row_value(row, "trade_time", "成交时间", "time"),
+                self._statement_row_value(row, "成交编号", "委托编号", "statement_id"),
+            ),
+        )
+        quantity = self._statement_numeric_sum(ordered_rows, "quantity", "qty", "成交数量", "数量")
+        amount = self._statement_numeric_sum(ordered_rows, "amount", "成交金额", "金额")
+        occurred_amount = self._statement_numeric_sum(ordered_rows, "发生金额", "occurred_amount", "net_amount", "actual_amount")
+        explicit_fee = self._statement_numeric_sum(ordered_rows, "手续费", "fee")
+        commission = self._statement_numeric_sum(ordered_rows, "佣金", "commission")
+        stamp_duty = self._statement_numeric_sum(ordered_rows, "印花税", "stamp_duty")
+        transfer_fee = self._statement_numeric_sum(ordered_rows, "过户费", "transfer_fee")
+        other_fee = self._statement_numeric_sum(ordered_rows, "其他费", "other_fee")
+        primary_fee = explicit_fee if explicit_fee is not None else commission
+        total_fee = sum(value for value in (primary_fee, stamp_duty, transfer_fee, other_fee) if value is not None)
+        weighted_amount = 0.0
+        weighted_has_value = False
+        for row in ordered_rows:
+            row_quantity = self._statement_row_float(row, "quantity", "qty", "成交数量", "数量")
+            row_price = self._statement_row_float(row, "trade_price", "成交价格", "成交均价", "price", "均价", "成交价")
+            if row_quantity is None or row_price is None:
+                continue
+            weighted_amount += row_quantity * row_price
+            weighted_has_value = True
+        trade_price: float | None = None
+        if quantity is not None and abs(quantity) > 1e-6:
+            if amount is not None:
+                trade_price = amount / quantity
+            elif weighted_has_value:
+                trade_price = weighted_amount / quantity
+
+        first_row = dict(ordered_rows[0])
+        first_time = self._statement_row_value(first_row, "trade_time", "成交时间", "time")
+        last_time = self._statement_row_value(ordered_rows[-1], "trade_time", "成交时间", "time")
+        statement_ids = [
+            self._statement_row_value(row, "成交编号", "委托编号", "statement_id")
+            for row in ordered_rows
+            if self._statement_row_value(row, "成交编号", "委托编号", "statement_id")
+        ]
+        statement_id_seed = "|".join(statement_ids) or "|".join(
+            [
+                trade_date,
+                account,
+                ts_code,
+                side_kind,
+                first_time,
+                last_time,
+                str(quantity or ""),
+            ]
+        )
+        aggregated_statement_id = f"agg:{hashlib.sha1(statement_id_seed.encode('utf-8')).hexdigest()[:16]}"
+        first_row.update(
+            {
+                "成交日期": trade_date,
+                "trade_date": trade_date,
+                "证券代码": ts_code.replace(".SH", "").replace(".SZ", ""),
+                "ts_code": ts_code,
+                "证券名称": name or self._statement_row_value(first_row, "证券名称", "股票名称", "名称", "name"),
+                "name": name or self._statement_row_value(first_row, "证券名称", "股票名称", "名称", "name"),
+                "股东账户": account,
+                "account": account,
+                "委托类别": "买入" if side_kind == "buy" else "卖出",
+                "side": "买入" if side_kind == "buy" else "卖出",
+                "成交时间": first_time,
+                "trade_time": first_time,
+                "成交编号": aggregated_statement_id,
+                "statement_id": aggregated_statement_id,
+                "成交数量": round(quantity, 6) if quantity is not None else "",
+                "quantity": round(quantity, 6) if quantity is not None else "",
+                "成交金额": round(amount, 6) if amount is not None else "",
+                "amount": round(amount, 6) if amount is not None else "",
+                "发生金额": round(occurred_amount, 6) if occurred_amount is not None else "",
+                "occurred_amount": round(occurred_amount, 6) if occurred_amount is not None else "",
+                "佣金": round(commission, 6) if commission is not None else "",
+                "commission": round(commission, 6) if commission is not None else "",
+                "印花税": round(stamp_duty, 6) if stamp_duty is not None else "",
+                "stamp_duty": round(stamp_duty, 6) if stamp_duty is not None else "",
+                "过户费": round(transfer_fee, 6) if transfer_fee is not None else "",
+                "transfer_fee": round(transfer_fee, 6) if transfer_fee is not None else "",
+                "其他费": round(other_fee, 6) if other_fee is not None else "",
+                "other_fee": round(other_fee, 6) if other_fee is not None else "",
+                "手续费": round(total_fee, 6) if total_fee else "",
+                "fee": round(total_fee, 6) if total_fee else "",
+                "成交价格": round(trade_price, 6) if trade_price is not None else "",
+                "trade_price": round(trade_price, 6) if trade_price is not None else "",
+                "__aggregation__": {
+                    "mode": "same_day_same_side",
+                    "group_size": len(ordered_rows),
+                    "trade_time_start": first_time,
+                    "trade_time_end": last_time,
+                    "statement_ids": statement_ids,
+                    "effective_price": round(abs(occurred_amount) / quantity, 6)
+                    if occurred_amount is not None and quantity is not None and abs(quantity) > 1e-6
+                    else None,
+                    "legs": [
+                        {
+                            "trade_time": self._statement_row_value(row, "trade_time", "成交时间", "time"),
+                            "statement_id": self._statement_row_value(row, "成交编号", "委托编号", "statement_id"),
+                            "trade_price": self._statement_row_float(row, "trade_price", "成交价格", "成交均价", "price", "均价", "成交价"),
+                            "quantity": self._statement_row_float(row, "quantity", "qty", "成交数量", "数量"),
+                            "amount": self._statement_row_float(row, "amount", "成交金额", "金额"),
+                            "occurred_amount": self._statement_row_float(row, "发生金额", "occurred_amount", "net_amount", "actual_amount"),
+                        }
+                        for row in ordered_rows
+                    ],
+                },
+            }
+        )
+        return first_row
+
+    def _aggregate_statement_rows(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        default_trade_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        grouped_rows: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+        passthrough_rows: list[tuple[int, dict[str, Any]]] = []
+        group_order: list[tuple[tuple[str, str, str, str], int]] = []
+        normalized_default_trade_date = normalize_trade_date(default_trade_date or self._today())
+
+        for index, raw_row in enumerate(rows):
+            row = dict(raw_row or {})
+            generic_date = self._statement_row_value(row, "trade_date", "成交日期", "date", "成交时间")
+            trade_date = normalize_trade_date(generic_date or normalized_default_trade_date)
+            side_kind = _statement_side_kind(self._statement_row_value(row, "side", "direction", "买卖标志", "成交方向", "委托类别", "操作"))
+            account = self._statement_row_value(row, "股东账户", "证券账户", "account")
+            ts_code_raw = self._statement_row_value(row, "ts_code", "code", "symbol", "证券代码", "股票代码", "代码")
+            ts_code = normalize_ts_code(ts_code_raw) if ts_code_raw else ""
+            name = self._statement_row_value(row, "name", "证券名称", "股票名称", "名称")
+            if not trade_date or not side_kind or not account or not ts_code:
+                passthrough_rows.append((index, row))
+                continue
+            key = (trade_date, account, ts_code, side_kind)
+            if key not in grouped_rows:
+                grouped_rows[key] = []
+                group_order.append((key, index))
+            grouped_rows[key].append(row)
+
+        aggregated: list[tuple[int, dict[str, Any]]] = list(passthrough_rows)
+        for key, first_index in group_order:
+            trade_date, account, ts_code, side_kind = key
+            bucket = grouped_rows[key]
+            aggregated.append(
+                (
+                    first_index,
+                    self._aggregate_statement_group(
+                        bucket,
+                        trade_date=trade_date,
+                        side_kind=side_kind,
+                        ts_code=ts_code,
+                        name=self._statement_row_value(bucket[0], "name", "证券名称", "股票名称", "名称"),
+                        account=account,
+                    ),
+                )
+            )
+        aggregated.sort(key=lambda item: item[0])
+        return [row for _, row in aggregated]
+
     def _load_statement_rows(self, path: Path) -> list[dict[str, Any]]:
         suffix = path.suffix.lower()
         if suffix == ".json":
@@ -3406,6 +3668,8 @@ class FinanceJournalApp:
                 {_statement_text_value(key): value for key, value in dict(row or {}).items() if _statement_text_value(key)}
                 for row in rows
             ]
+        if suffix in {".txt"}:
+            return self._load_fixed_width_statement_rows(path, encoding_candidates=["utf-8-sig", "utf-8", "gbk"])
         if suffix in {".csv"}:
             return self._load_delimited_statement_rows(path, encoding_candidates=["utf-8-sig", "utf-8", "gbk"], delimiter=",")
         if suffix in {".tsv"}:
@@ -3434,12 +3698,16 @@ class FinanceJournalApp:
             return None
 
     def _statement_context_from_row(self, normalized: dict[str, Any], row: dict[str, Any], *, source_file: str = "") -> dict[str, Any]:
+        aggregation_meta = dict(row.get("__aggregation__") or {})
         leg_payload = {
             "trade_date": normalized.get("buy_date") or normalized.get("sell_date") or "",
             "trade_time": self._statement_row_value(row, "trade_time", "成交时间", "time"),
+            "trade_time_end": aggregation_meta.get("trade_time_end") or "",
             "quantity": normalized.get("quantity"),
             "amount": normalized.get("amount"),
             "fee": normalized.get("fee"),
+            "total_fee": self._statement_row_total_fee(row),
+            "effective_price": aggregation_meta.get("effective_price") or self._statement_row_effective_price(row),
             "occurred_amount": self._statement_row_float(row, "发生金额", "net_amount", "actual_amount"),
             "commission": self._statement_row_float(row, "佣金", "commission"),
             "stamp_duty": self._statement_row_float(row, "印花税", "stamp_duty"),
@@ -3448,6 +3716,10 @@ class FinanceJournalApp:
             "shareholder_account": self._statement_row_value(row, "股东账户", "证券账户", "account"),
             "statement_id": self._statement_row_value(row, "成交编号", "委托编号", "statement_id"),
             "side": self._statement_row_value(row, "side", "direction", "买卖标志", "成交方向", "委托类别", "操作"),
+            "aggregation_mode": aggregation_meta.get("mode") or "",
+            "aggregated_row_count": aggregation_meta.get("group_size"),
+            "statement_ids": aggregation_meta.get("statement_ids") or [],
+            "legs": aggregation_meta.get("legs") or [],
         }
         leg_payload = {key: value for key, value in leg_payload.items() if value not in (None, "", [])}
         payload = {
@@ -3579,6 +3851,8 @@ class FinanceJournalApp:
         sell_leg = dict((statement_context or {}).get("sell_leg") or {})
         sell_statement_id = str(sell_leg.get("statement_id") or "").strip()
         sell_account = str(sell_leg.get("shareholder_account") or "").strip()
+        target_buy_quantity = _coalesce_float(normalized.get("quantity"))
+        target_sell_quantity = _coalesce_float(sell_leg.get("quantity")) or _coalesce_float(normalized.get("quantity"))
         if normalized.get("journal_kind") == "close_only" and sell_statement_id:
             statement_matches: list[dict[str, Any]] = []
             for trade in candidates:
@@ -3593,6 +3867,8 @@ class FinanceJournalApp:
                 candidate_account = self._trade_statement_account(trade, leg_key="sell_leg")
                 if sell_account and candidate_account and candidate_account != sell_account:
                     continue
+                if not self._trade_statement_quantity_matches(trade, target_sell_quantity, leg_key="sell_leg"):
+                    continue
                 statement_matches.append(trade)
             if statement_matches:
                 return statement_matches
@@ -3602,9 +3878,13 @@ class FinanceJournalApp:
                 continue
             if normalized.get("buy_price") is not None and not self._trade_price_matches(trade.get("buy_price"), normalized.get("buy_price")):
                 continue
+            if not self._trade_statement_quantity_matches(trade, target_buy_quantity, leg_key="buy_leg"):
+                continue
             if normalized.get("sell_date") and trade.get("sell_date") != normalized.get("sell_date"):
                 continue
             if normalized.get("sell_price") is not None and trade.get("sell_date") and not self._trade_price_matches(trade.get("sell_price"), normalized.get("sell_price")):
+                continue
+            if normalized.get("sell_date") and not self._trade_statement_quantity_matches(trade, target_sell_quantity, leg_key="sell_leg"):
                 continue
             matches.append(trade)
         return matches
@@ -3618,6 +3898,14 @@ class FinanceJournalApp:
 
     def _trade_statement_quantity(self, trade: dict[str, Any], leg_key: str = "buy_leg") -> float | None:
         return _coalesce_float(self._trade_statement_leg_value(trade, "quantity", leg_key=leg_key))
+
+    def _trade_statement_quantity_matches(self, trade: dict[str, Any], quantity: float | None, *, leg_key: str = "buy_leg") -> bool:
+        if quantity is None:
+            return True
+        candidate_quantity = self._trade_statement_quantity(trade, leg_key=leg_key)
+        if candidate_quantity is None:
+            return True
+        return abs(candidate_quantity - quantity) <= 1e-6
 
     def _trade_statement_account(self, trade: dict[str, Any], leg_key: str = "buy_leg") -> str:
         return str(self._trade_statement_leg_value(trade, "shareholder_account", leg_key=leg_key) or "").strip()
@@ -4092,10 +4380,14 @@ class FinanceJournalApp:
         path = Path(statement_path)
         if not path.exists():
             raise FileNotFoundError(f"statement file not found: {path}")
-        rows = self._load_statement_rows(path)
+        normalized_trade_date = normalize_trade_date(trade_date or self._today())
+        source_rows = self._load_statement_rows(path)
+        rows = self._aggregate_statement_rows(
+            source_rows,
+            default_trade_date=normalized_trade_date,
+        )
 
         imported_items: list[dict[str, Any]] = []
-        normalized_trade_date = normalize_trade_date(trade_date or self._today())
         for index, raw_row in enumerate(rows, start=1):
             row = dict(raw_row or {})
             normalized = self._normalize_statement_row(row, default_trade_date=normalized_trade_date)
@@ -4268,6 +4560,8 @@ class FinanceJournalApp:
                 )
 
         summary = {
+            "source_rows": len(source_rows),
+            "aggregated_rows": len(rows),
             "total_rows": len(rows),
             "imported_new": sum(1 for item in imported_items if item.get("status") == "imported_new"),
             "matched_existing": sum(1 for item in imported_items if item.get("status") == "matched_existing"),

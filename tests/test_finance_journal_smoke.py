@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -204,6 +205,40 @@ class FinanceJournalSmokeTest(unittest.TestCase):
 
         memory_query = self.app.query_memory(ts_code="603083", limit=5)
         self.assertTrue(memory_query["matched_cells"])
+
+    def test_statement_txt_import_aggregates_same_side_rows(self) -> None:
+        statement_path = self.runtime_root / "statement_rows.txt"
+        statement_path.write_text(
+            "-------------------------------------------------------------------------------------------------------\n\n"
+            "trade_date        trade_time        account          ts_code        name        side        trade_price        quantity        amount        occurred_amount         commission         stamp_duty        transfer_fee        other_fee        statement_id\n"
+            "20260410        09:30:00        A000000001        600000          PFYH        buy            10.000          100             1000.00         -1005.00         5.00         0.00          0.00          0.00          deal_1\n"
+            "20260410        09:31:00        A000000001        600000          PFYH        buy            11.000          200             2200.00         -2205.00         5.00         0.00          0.00          0.00          deal_2\n"
+            "20260411        10:00:00        A000000001        600000          PFYH        sell            12.000          100             1200.00         1194.00          5.00         1.00          0.00          0.00          deal_3\n"
+            "20260411        10:05:00        A000000001        600000          PFYH        sell            12.500          200             2500.00         2492.50          5.00         2.50          0.00          0.00          deal_4\n",
+            encoding="gbk",
+        )
+
+        result = self.app.import_statement_file(str(statement_path), trade_date="20260411")
+        self.assertEqual(result["summary"]["source_rows"], 4)
+        self.assertEqual(result["summary"]["aggregated_rows"], 2)
+        self.assertEqual(result["summary"]["imported_new"], 1)
+        self.assertEqual(result["summary"]["closed_existing"], 1)
+
+        trades = self.app.db.fetchall("SELECT * FROM trades WHERE ts_code = ? ORDER BY buy_date ASC", ("600000.SH",))
+        self.assertEqual(len(trades), 1)
+        trade = trades[0]
+        self.assertEqual(trade["status"], "closed")
+        self.assertAlmostEqual(float(trade["buy_price"]), 3200.0 / 300.0, places=6)
+        self.assertAlmostEqual(float(trade["sell_price"]), 3700.0 / 300.0, places=6)
+
+        trade_row = self.app.get_trade(trade["trade_id"])
+        context = json.loads(trade_row["statement_context_json"] or "{}")
+        self.assertEqual(context["buy_leg"]["aggregated_row_count"], 2)
+        self.assertEqual(context["sell_leg"]["aggregated_row_count"], 2)
+        self.assertAlmostEqual(float(context["buy_leg"]["quantity"]), 300.0, places=6)
+        self.assertAlmostEqual(float(context["sell_leg"]["quantity"]), 300.0, places=6)
+        self.assertEqual(len(context["buy_leg"]["statement_ids"]), 2)
+        self.assertEqual(len(context["sell_leg"]["statement_ids"]), 2)
 
     def test_schedule_uses_memory_compaction(self) -> None:
         self.app.log_trade(
