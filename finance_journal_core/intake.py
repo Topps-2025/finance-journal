@@ -151,6 +151,29 @@ FOLLOW_UP_MAP = {
     "sell_date": "实际卖出日期是什么？",
     "sell_price": "实际卖出价格是多少？",
 }
+FIELD_PROMPT_LABELS = {
+    "ts_code": "标的代码/名称",
+    "direction": "交易方向",
+    "thesis": "核心逻辑",
+    "stop_loss": "止损条件",
+    "buy_date": "买入日期",
+    "buy_price": "买入价格",
+    "sell_date": "卖出日期",
+    "sell_price": "卖出价格",
+    "logic_tags": "逻辑标签",
+    "pattern_tags": "形态标签",
+    "environment_tags": "市场主题/阶段",
+    "user_focus": "关注对象",
+    "observed_signals": "触发信号",
+    "position_reason": "仓位理由",
+    "position_confidence": "把握度",
+    "holding_period": "持有周期",
+    "sell_zone": "卖出区间",
+    "emotion_notes": "情绪记录",
+    "mistake_tags": "执行问题",
+    "lessons_learned": "复盘教训",
+    "stress_level": "压力分",
+}
 COMPLETENESS_FIELDS = {
     "plan": {
         "core": ["thesis", "user_focus", "observed_signals", "position_reason", "environment_tags"],
@@ -413,10 +436,15 @@ def _has_meaningful_thesis(raw_text: str, thesis: str) -> bool:
     compact = re.sub(r"\d{6}(?:\.(?:sh|sz|bj))?", "", lowered)
     compact = re.sub(r"\d+(?:\.\d+)?", "", compact)
     compact = re.sub(r"[，,。；;、\s\-_/]+", "", compact)
-    if len(compact) < 6:
-        return False
     generic_hits = sum(1 for hint in ("今天", "昨天", "买", "卖", "开仓", "平仓") if hint in value)
-    return generic_hits <= 2 and compact != re.sub(r"[，,。；;、\s\-_/]+", "", str(raw_text or "").lower())
+    if generic_hits > 2:
+        return False
+    raw_compact = re.sub(r"[，,。；;、\s\-_/]+", "", str(raw_text or "").lower())
+    if compact == raw_compact:
+        return False
+    if len(compact) >= 6:
+        return True
+    return len(compact) >= 3 and bool(re.search(r"[\u4e00-\u9fffA-Za-z]", compact))
 
 
 def field_has_explicit_value(field_name: str, value: Any, fields: dict[str, Any] | None = None) -> bool:
@@ -445,7 +473,12 @@ def required_fields_for_kind(journal_kind: str) -> list[str]:
 
 
 def build_follow_up_questions(missing_fields: list[str]) -> list[str]:
-    return [FOLLOW_UP_MAP[item] for item in missing_fields if item in FOLLOW_UP_MAP]
+    questions: list[str] = []
+    for item in missing_fields:
+        if item not in FOLLOW_UP_MAP:
+            continue
+        questions.append(f"{field_prompt_label(item)}：{FOLLOW_UP_MAP[item]}")
+    return questions
 
 
 def build_completeness_report(
@@ -461,7 +494,10 @@ def build_completeness_report(
     trackable_fields = profile["core"] + profile["review"]
     filled_count = sum(1 for name in trackable_fields if field_has_explicit_value(name, fields.get(name), fields=fields))
     total_count = len(trackable_fields)
-    blocking_fields = list(dict.fromkeys(required_missing + core_missing))
+    non_blocking_core_fields = {"user_focus", "observed_signals", "position_reason"}
+    blocking_fields = list(
+        dict.fromkeys(required_missing + [name for name in core_missing if name not in non_blocking_core_fields])
+    )
     completion_score = 1.0 if total_count == 0 else round(filled_count / total_count, 4)
     return {
         "journal_kind": journal_kind,
@@ -473,7 +509,7 @@ def build_completeness_report(
         "filled_trackable_fields": filled_count,
         "total_trackable_fields": total_count,
         "completion_score": completion_score,
-        "needs_follow_up": bool(blocking_fields or review_missing),
+        "needs_follow_up": bool(required_missing or core_missing or review_missing),
         "ready_for_evolution": not blocking_fields,
     }
 
@@ -484,7 +520,7 @@ def build_reflection_prompts(fields: dict[str, Any], journal_kind: str, missing_
         prompts.append(
             {
                 "field": "thesis",
-                "question": "如果只能保留一句话，这笔交易/计划最核心的逻辑是什么？",
+                "question": "核心逻辑：如果只能保留一句话，这笔交易/计划最核心的逻辑是什么？",
                 "options": ["题材回流", "均线回踩", "情绪修复", "业绩催化"],
             }
         )
@@ -492,7 +528,7 @@ def build_reflection_prompts(fields: dict[str, Any], journal_kind: str, missing_
         prompts.append(
             {
                 "field": "user_focus",
-                "question": "你当时主要盯着哪些对象或信息切片？比如个股、板块、大盘、盘口、新闻。",
+                "question": "关注对象：你当时主要盯着哪些对象或信息切片？比如个股、板块、大盘、盘口、新闻。",
                 "options": list(FOCUS_CANDIDATES),
             }
         )
@@ -500,7 +536,7 @@ def build_reflection_prompts(fields: dict[str, Any], journal_kind: str, missing_
         prompts.append(
             {
                 "field": "observed_signals",
-                "question": "真正触发你出手/离场的那个信号是什么？尽量描述你当时看到的市场状态。",
+                "question": "触发信号：真正触发你出手/离场的那个信号是什么？尽量描述你当时看到的市场状态。",
                 "options": list(SIGNAL_CANDIDATES[:4]),
             }
         )
@@ -508,7 +544,7 @@ def build_reflection_prompts(fields: dict[str, Any], journal_kind: str, missing_
         prompts.append(
             {
                 "field": "position_reason",
-                "question": "这次仓位为什么这样配？是试错仓、确定性更高，还是怕错过先上一笔？",
+                "question": "仓位理由：这次仓位为什么这样配？是试错仓、确定性更高，还是怕错过先上一笔？",
                 "options": list(POSITION_REASON_CANDIDATES[:4]),
             }
         )
@@ -524,7 +560,7 @@ def build_reflection_prompts(fields: dict[str, Any], journal_kind: str, missing_
         prompts.append(
             {
                 "field": "environment_tags",
-                "question": "当时的市场背景更像哪一种？",
+                "question": "市场主题/阶段：当时的市场背景更像哪一种？这一版里可把 market_stage 和 environment_tags 当成同一个意思来填。",
                 "options": list(ENV_CANDIDATES[:4]),
             }
         )
@@ -811,6 +847,10 @@ GUIDED_PROMPT_SECTION_HINTS = {
 }
 
 
+def field_prompt_label(field_name: str) -> str:
+    return FIELD_PROMPT_LABELS.get(field_name, field_name)
+
+
 def _section_key_for_field(field_name: str) -> str:
     for section_key, _, field_names in GUIDED_PROMPT_SECTION_SPECS:
         if field_name in field_names:
@@ -862,12 +902,19 @@ def _build_guided_prompt(
             "emotion": "情绪与复盘",
         }
         next_section = axis_map.get(next_axis, "")
-    lines = ["建议按这个模板一次补，没提到的项写“无”即可："]
-    for index, section in enumerate(sections, start=1):
-        line = f"{index}. {section['label']}：{section['placeholder']}"
-        if section["examples"]:
-            line += f"（例如：{section['examples'][0]}）"
-        lines.append(line)
+    lines = [
+        "建议严格按下面的字段名逐项填写；没有信息就写“无”，尽量不要省略字段名：",
+    ]
+    field_number = 1
+    for section in sections:
+        for field_name in section.get("fields", []):
+            item = bundle_items.get(field_name) or {}
+            line = f"{field_number}. {field_prompt_label(field_name)}：..."
+            examples = list(item.get("examples") or [])
+            if examples:
+                line += f"（例如：{examples[0]}）"
+            lines.append(line)
+            field_number += 1
     return {
         "opening": "建议按这个模板顺着补，减少漏问和来回轮询。",
         "next_section": next_section,

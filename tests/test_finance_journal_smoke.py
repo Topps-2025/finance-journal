@@ -154,6 +154,42 @@ class FinanceJournalSmokeTest(unittest.TestCase):
         self.assertEqual(second["route"], "entity_enriched")
         self.assertIn("memory_retrieval", second)
 
+    def test_trade_context_alignment_stays_in_runtime_paths(self) -> None:
+        first = self.app.log_trade(
+            ts_code="002463",
+            name="沪电股份",
+            buy_date="20260302",
+            buy_price=81.27,
+            sell_date="20260302",
+            sell_price=80.91,
+            thesis="PCB主线",
+            market_stage_tag="",
+            environment_tags=[],
+        )
+        second = self.app.log_trade(
+            ts_code="601869",
+            name="长飞光纤",
+            buy_date="20260327",
+            buy_price=269.06,
+            sell_date="20260331",
+            sell_price=299.33,
+            thesis="光纤涨价",
+            market_stage_tag="",
+            environment_tags=["光通信"],
+        )
+
+        self.app.db.execute(
+            "UPDATE trades SET market_stage_tag = ?, environment_tags_json = ?, updated_at = updated_at WHERE trade_id = ?",
+            ("美伊战争流动性杀跌", "[]", first["trade_id"]),
+        )
+
+        first_fields = self.app._trade_to_journal_fields(self.app.get_trade(first["trade_id"]) or {})
+        second_row = self.app.get_trade(second["trade_id"]) or {}
+
+        self.assertIn("美伊战争流动性杀跌", first_fields["environment_tags"])
+        self.assertEqual(first_fields["market_stage"], "美伊战争流动性杀跌")
+        self.assertEqual(second_row["market_stage_tag"], "光通信")
+
     def test_draft_polling_bundle_includes_guided_template(self) -> None:
         draft_turn = self.app.handle_session_turn(
             "qq:user_draft",

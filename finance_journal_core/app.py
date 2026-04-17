@@ -26,6 +26,7 @@ from .intake import (
     build_standardized_record,
     evaluate_journal_fields,
     extract_field_value,
+    field_prompt_label,
     parse_freeform_journal,
 )
 from .market_data import (
@@ -512,12 +513,35 @@ class FinanceJournalApp:
         return "open_trade"
 
     def _pick_market_stage(self, environment_tags: list[str] | str | None, fallback: str = "") -> str:
-        for tag in split_tags(environment_tags):
+        tags = split_tags(environment_tags)
+        for tag in tags:
             if tag.endswith("市") or "分歧" in tag or "主升" in tag or "冰点" in tag or "下跌" in tag or "上涨" in tag:
                 return tag
+        if tags:
+            return tags[0]
         return str(fallback or "").strip()
 
+    def _align_market_stage_and_environment_tags(
+        self,
+        market_stage: str | None,
+        environment_tags: list[str] | str | None,
+    ) -> tuple[str, list[str]]:
+        stage = str(market_stage or "").strip()
+        env_tags = self._merge_unique_tags(environment_tags)
+        if stage:
+            env_tags = self._merge_unique_tags(env_tags, [stage])
+        if not stage:
+            fallback = env_tags[0] if env_tags else ""
+            stage = self._pick_market_stage(env_tags, fallback=fallback)
+        elif stage not in env_tags:
+            env_tags = self._merge_unique_tags(env_tags, [stage])
+        return stage, env_tags
+
     def _plan_to_journal_fields(self, plan: dict[str, Any]) -> dict[str, Any]:
+        market_stage, environment_tags = self._align_market_stage_and_environment_tags(
+            plan.get("market_stage_tag"),
+            json_loads(plan.get("environment_tags_json"), []),
+        )
         fields = {
             "ts_code": plan.get("ts_code") or "",
             "name": plan.get("name") or "",
@@ -525,7 +549,8 @@ class FinanceJournalApp:
             "thesis": plan.get("thesis") or "",
             "logic_tags": split_tags(json_loads(plan.get("logic_tags_json"), [])),
             "pattern_tags": [],
-            "environment_tags": split_tags(json_loads(plan.get("environment_tags_json"), [])),
+            "environment_tags": environment_tags,
+            "market_stage": market_stage,
             "user_focus": [],
             "observed_signals": [],
             "position_reason": "",
@@ -550,6 +575,10 @@ class FinanceJournalApp:
         return self._apply_decision_context_to_fields(fields, json_loads(plan.get("decision_context_json"), {}) or {})
 
     def _trade_to_journal_fields(self, trade: dict[str, Any]) -> dict[str, Any]:
+        market_stage, environment_tags = self._align_market_stage_and_environment_tags(
+            trade.get("market_stage_tag"),
+            json_loads(trade.get("environment_tags_json"), []),
+        )
         fields = {
             "ts_code": trade.get("ts_code") or "",
             "name": trade.get("name") or "",
@@ -557,7 +586,8 @@ class FinanceJournalApp:
             "thesis": trade.get("thesis") or "",
             "logic_tags": split_tags(json_loads(trade.get("logic_type_tags_json"), [])),
             "pattern_tags": split_tags(json_loads(trade.get("pattern_tags_json"), [])),
-            "environment_tags": split_tags(json_loads(trade.get("environment_tags_json"), [])),
+            "environment_tags": environment_tags,
+            "market_stage": market_stage,
             "user_focus": [],
             "observed_signals": [],
             "position_reason": "",
@@ -1036,6 +1066,50 @@ class FinanceJournalApp:
         guided_prompt = (polling_bundle.get("guided_prompt") or {}).get("reply_template") or ""
         template_text = f"\n{guided_prompt}" if guided_prompt else ""
         return f"{reuse_prefix}我先帮你起草好了，当前还缺：{missing or '无'}。下一问：{next_question}{example_text}{template_text}"
+
+    def _answer_template_for_fields(self, field_names: list[str]) -> str:
+        lines: list[str] = []
+        for index, field_name in enumerate(field_names, start=1):
+            lines.append(f"{index}. {field_prompt_label(field_name)}：...")
+        return "\n".join(lines)
+
+    def _polish_thesis_variant(self, thesis: str) -> str:
+        text = re.sub(r"\s+", " ", str(thesis or "").strip(" ，,；;。"))
+        if not text:
+            return ""
+        parts = [part.strip(" ，,；;。") for part in re.split(r"[，,；;。]+", text) if part.strip(" ，,；;。")]
+        if len(parts) <= 1:
+            return text
+        polished = [parts[0]]
+        if len(parts) >= 2:
+            polished.append(f"叠加{parts[1]}")
+        if len(parts) >= 3:
+            polished.append(f"且{parts[2]}")
+        if len(parts) > 3:
+            polished.extend(parts[3:])
+        return "，".join(polished)
+
+    def _collect_thesis_polish_hints(self, items: list[dict[str, Any]]) -> list[str]:
+        source_texts = [
+            str(item.get("thesis") or "").strip()
+            for item in items
+            if str(item.get("thesis") or "").strip()
+        ]
+        if len(source_texts) < 2:
+            return []
+        normalized = [re.sub(r"[，,；;。\s]+", "", text) for text in source_texts]
+        if len(set(normalized)) == len(normalized):
+            return []
+        polished: list[str] = []
+        seen: set[str] = set()
+        for text in source_texts:
+            candidate = self._polish_thesis_variant(text)
+            key = re.sub(r"[，,；;。\s]+", "", candidate)
+            if not candidate or key in seen:
+                continue
+            seen.add(key)
+            polished.append(candidate)
+        return polished[:2]
 
     def _assistant_message_for_applied(
         self,
@@ -2776,6 +2850,8 @@ class FinanceJournalApp:
         if fields:
             for key in ("logic_tags", "pattern_tags", "environment_tags", "mistake_tags"):
                 tag_values.extend(split_tags((fields or {}).get(key, [])))
+            if not market_stage:
+                market_stage = self._pick_market_stage((fields or {}).get("environment_tags"), fallback=market_stage)
         if not ts_code and entity_kind == "trade" and entity_id:
             trade = self.get_trade(entity_id) or {}
             ts_code = str(trade.get("ts_code") or "")
@@ -2825,6 +2901,7 @@ class FinanceJournalApp:
         start = normalize_trade_date(valid_from or self._today())
         end = normalize_trade_date(valid_to or shift_calendar_date(start, 3))
         timestamp = now_ts()
+        aligned_market_stage, aligned_environment_tags = self._align_market_stage_and_environment_tags(market_stage, environment_tags)
         with self.db.connect() as conn:
             conn.execute(
                 """
@@ -2845,8 +2922,8 @@ class FinanceJournalApp:
                     direction,
                     thesis,
                     json_dumps(split_tags(logic_tags)),
-                    market_stage or "",
-                    json_dumps(split_tags(environment_tags)),
+                    aligned_market_stage,
+                    json_dumps(aligned_environment_tags),
                     buy_zone or "",
                     sell_zone or "",
                     stop_loss or "",
@@ -2866,16 +2943,16 @@ class FinanceJournalApp:
         if with_reference:
             result["reference"] = self.generate_reference(
                 logic_tags=split_tags(logic_tags),
-                market_stage=market_stage,
-                environment_tags=split_tags(environment_tags),
+                market_stage=aligned_market_stage,
+                environment_tags=aligned_environment_tags,
                 lookback_days=lookback_days,
                 write_artifact=False,
             )
-        if split_tags(logic_tags) or market_stage or split_tags(environment_tags):
+        if split_tags(logic_tags) or aligned_market_stage or aligned_environment_tags:
             result["evolution_reminder"] = self.generate_evolution_reminder(
                 logic_tags=split_tags(logic_tags),
-                market_stage=market_stage,
-                environment_tags=split_tags(environment_tags),
+                market_stage=aligned_market_stage,
+                environment_tags=aligned_environment_tags,
                 lookback_days=lookback_days,
                 write_artifact=False,
             )
@@ -2927,7 +3004,12 @@ class FinanceJournalApp:
         merged_fields, parsed = self._merge_journal_reply(before_fields, text, mode="plan", trade_date=anchor_date, current_missing=[])
         merged_fields["ts_code"] = plan.get("ts_code") or merged_fields.get("ts_code") or ""
         merged_fields["name"] = plan.get("name") or merged_fields.get("name") or ""
-        market_stage = self._pick_market_stage(merged_fields.get("environment_tags"), fallback=plan.get("market_stage_tag") or "")
+        market_stage, merged_environment_tags = self._align_market_stage_and_environment_tags(
+            plan.get("market_stage_tag") or "",
+            merged_fields.get("environment_tags"),
+        )
+        merged_fields["environment_tags"] = merged_environment_tags
+        merged_fields["market_stage"] = market_stage
         decision_context = self._decision_context_from_fields(
             merged_fields,
             "plan",
@@ -3074,6 +3156,10 @@ class FinanceJournalApp:
         trade_id = make_id("trade")
         normalized_buy_date = normalize_trade_date(buy_date)
         normalized_sell_date = normalize_trade_date(sell_date) if sell_date else ""
+        aligned_market_stage, aligned_environment_tags = self._align_market_stage_and_environment_tags(
+            market_stage_tag,
+            environment_tags,
+        )
         plan = self.get_plan(plan_id) if plan_id else None
         snapshot = None
         if fetch_snapshot:
@@ -3118,8 +3204,8 @@ class FinanceJournalApp:
                     json_dumps(split_tags(logic_type_tags)),
                     json_dumps(split_tags(pattern_tags)),
                     theme or "",
-                    market_stage_tag or "",
-                    json_dumps(split_tags(environment_tags)),
+                    aligned_market_stage,
+                    json_dumps(aligned_environment_tags),
                     snapshot.get("snapshot_id") if snapshot else "",
                     benchmark_return,
                     actual_return,
@@ -3142,12 +3228,12 @@ class FinanceJournalApp:
             self.update_plan_status(plan_id, "executed", trade_id=trade_id)
         trade_row = self.get_trade(trade_id) or {}
         trade_row["memory_cell"] = self._sync_memory_for_entity("trade", trade_id)
-        if split_tags(logic_type_tags) or split_tags(pattern_tags) or market_stage_tag or split_tags(environment_tags):
+        if split_tags(logic_type_tags) or split_tags(pattern_tags) or aligned_market_stage or aligned_environment_tags:
             trade_row["evolution_reminder"] = self.generate_evolution_reminder(
                 logic_tags=split_tags(logic_type_tags),
                 pattern_tags=split_tags(pattern_tags),
-                market_stage=market_stage_tag,
-                environment_tags=split_tags(environment_tags),
+                market_stage=aligned_market_stage,
+                environment_tags=aligned_environment_tags,
                 trade_date=normalized_buy_date,
                 write_artifact=False,
             )
@@ -3240,7 +3326,12 @@ class FinanceJournalApp:
         merged_fields, parsed = self._merge_journal_reply(before_fields, text, mode="trade", trade_date=anchor_date, current_missing=[])
         merged_fields["ts_code"] = trade.get("ts_code") or merged_fields.get("ts_code") or ""
         merged_fields["name"] = trade.get("name") or merged_fields.get("name") or ""
-        market_stage = self._pick_market_stage(merged_fields.get("environment_tags"), fallback=trade.get("market_stage_tag") or "")
+        market_stage, merged_environment_tags = self._align_market_stage_and_environment_tags(
+            trade.get("market_stage_tag") or "",
+            merged_fields.get("environment_tags"),
+        )
+        merged_fields["environment_tags"] = merged_environment_tags
+        merged_fields["market_stage"] = market_stage
         normalized_buy_date = normalize_trade_date(merged_fields.get("buy_date") or trade.get("buy_date") or anchor_date)
         normalized_sell_date = normalize_trade_date(merged_fields.get("sell_date")) if merged_fields.get("sell_date") else ""
         buy_price = _coalesce_float(merged_fields.get("buy_price"))
@@ -4210,6 +4301,7 @@ class FinanceJournalApp:
                     "status": trade.get("status") or "",
                     "ts_code": trade.get("ts_code") or "",
                     "name": trade.get("name") or "",
+                    "thesis": trade.get("thesis") or "",
                     "trade_date": trade.get("buy_date") or trade.get("sell_date") or "",
                     "buy_date": trade.get("buy_date") or "",
                     "sell_date": trade.get("sell_date") or "",
@@ -4265,50 +4357,72 @@ class FinanceJournalApp:
 
         scope = str(group.get("scope") or "")
         fields = list(group.get("fields") or [])
+        thesis_hints = self._collect_thesis_polish_hints(selected_items)
         if scope == "trade_date":
             title = f"{group.get('label')}: {group.get('group_key')}"
-            prompt = "\n".join(
-                [
-                    f"请一次补完 {len(selected_items)} 笔同日交易的共享市场环境。",
-                    "相关交易：",
-                    *[f"- {self._follow_up_trade_label(item)}" for item in selected_items],
-                    "优先回答：",
-                    "1. 当天整体市场环境或阶段（environment_tags）",
-                    "2. 当时主要盯着哪些对象（user_focus）",
-                    "3. 共同触发信号（observed_signals）",
-                    "4. 如果某一笔有特殊差异，再按 trade_id 单独补一句 thesis 或 position_reason",
-                ]
-            )
-            answer_template = (
-                "共享：environment_tags=...；user_focus=...；observed_signals=...\n"
-                "逐笔：\n"
-                + "\n".join(
-                    f"- {item.get('trade_id')}: thesis=...；position_reason=...；difference=..."
+            prompt_lines = [
+                f"请一次补完 {len(selected_items)} 笔同日交易的共享市场环境。",
+                "请尽量按字段名填写，没有就写“无”，这样回填最稳。",
+                "相关交易：",
+                *[f"- {self._follow_up_trade_label(item)}" for item in selected_items],
+                "建议模板：",
+                "1. 市场主题/阶段：...",
+                "2. 关注对象：...",
+                "3. 触发信号：...",
+                "4. 逐笔补充：",
+                *[
+                    f"   - {item.get('trade_id')}：核心逻辑=...；仓位理由=...；差异说明=..."
                     for item in selected_items
-                )
+                ],
+            ]
+            if thesis_hints:
+                prompt_lines.extend(["可参考润色（不改变原意）：", *[f"- {text}" for text in thesis_hints]])
+            prompt = "\n".join(prompt_lines)
+            answer_template = "\n".join(
+                [
+                    "1. 市场主题/阶段：...",
+                    "2. 关注对象：...",
+                    "3. 触发信号：...",
+                    "4. 逐笔补充：",
+                    *[
+                        f"   - {item.get('trade_id')}：核心逻辑=...；仓位理由=...；差异说明=..."
+                        for item in selected_items
+                    ],
+                ]
             )
         else:
             title = f"{group.get('label')}: {group.get('group_key')}"
-            prompt = "\n".join(
-                [
-                    f"请一次补完 {len(selected_items)} 笔同票/同主线交易的共享原因。",
-                    "相关交易：",
-                    *[f"- {self._follow_up_trade_label(item)}" for item in selected_items],
-                    "优先回答：",
-                    "1. 为什么持续盯这只票或这条主线（thesis）",
-                    "2. 共用的关注点（user_focus）",
-                    "3. 共用的触发信号（observed_signals）",
-                    "4. 默认仓位理由（position_reason）",
-                    "5. 如果每笔有差异，再按 trade_id 单独补一句差异说明",
-                ]
-            )
-            answer_template = (
-                "共享：thesis=...；user_focus=...；observed_signals=...；position_reason=...\n"
-                "逐笔：\n"
-                + "\n".join(
-                    f"- {item.get('trade_id')}: difference=...；environment_tags=..."
+            prompt_lines = [
+                f"请一次补完 {len(selected_items)} 笔同票/同主线交易的共享原因。",
+                "请尽量按字段名填写，没有就写“无”，这样不容易串字段。",
+                "相关交易：",
+                *[f"- {self._follow_up_trade_label(item)}" for item in selected_items],
+                "建议模板：",
+                "1. 核心逻辑：...",
+                "2. 关注对象：...",
+                "3. 触发信号：...",
+                "4. 仓位理由：...",
+                "5. 逐笔差异：",
+                *[
+                    f"   - {item.get('trade_id')}：差异说明=...；市场主题/阶段=..."
                     for item in selected_items
-                )
+                ],
+            ]
+            if thesis_hints:
+                prompt_lines.extend(["可参考润色（不改变原意）：", *[f"- {text}" for text in thesis_hints]])
+            prompt = "\n".join(prompt_lines)
+            answer_template = "\n".join(
+                [
+                    "1. 核心逻辑：...",
+                    "2. 关注对象：...",
+                    "3. 触发信号：...",
+                    "4. 仓位理由：...",
+                    "5. 逐笔差异：",
+                    *[
+                        f"   - {item.get('trade_id')}：差异说明=...；市场主题/阶段=..."
+                        for item in selected_items
+                    ],
+                ]
             )
         return {
             "batch_id": f"{scope}:{group.get('group_key')}",
@@ -4329,13 +4443,14 @@ class FinanceJournalApp:
         prompt = "\n".join(
             [
                 "请补这笔交易缺失的主观信息。",
+                "请尽量逐项按“字段名：内容”填写，没有就写“无”。",
                 f"交易：{self._follow_up_trade_label(item)}",
                 f"当前优先问题：{item.get('next_question') or '请补核心逻辑与市场环境。'}",
-                "建议优先补这些字段：",
-                *[f"- {field}" for field in answer_fields],
+                "建议模板：",
+                self._answer_template_for_fields(answer_fields),
             ]
         )
-        answer_template = "；".join(f"{field}=..." for field in answer_fields)
+        answer_template = self._answer_template_for_fields(answer_fields)
         return {
             "batch_id": f"trade:{item.get('trade_id')}",
             "kind": "single_trade",
